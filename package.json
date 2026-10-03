@@ -1,6 +1,6 @@
 {
 	"name": "textlate",
-	"version": "1.0.0",
+	"version": "1.0.1",
 	"description": "Write your text in your code, translate it with AI in one command. Lightweight, type-safe i18n for React 19 and Next.js App Router: ~3 kB, zero dependencies, no keys. A fast, modern alternative to react-i18next, react-intl and next-intl with plurals, rich text, Intl formatting, lazy locales, SSR and Server Components.",
 	"type": "module",
 	"sideEffects": false,
