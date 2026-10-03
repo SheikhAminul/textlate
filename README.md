@@ -450,48 +450,6 @@ Why it's fast:
 - Memory stays bounded on a long-running server, even when text, locales, options or numbers come from user input: every cache is capped.
 - The store lives outside React and is read with `useSyncExternalStore`. The context value never changes, so components re-render only when the locale does, not when a parent re-renders.
 
-## Migrating from other libraries
-
-The concepts map one to one. Keys become the text they stood for, and plural forms move into the code.
-
-### From react-i18next
-
-| react-i18next | textlate |
-|---|---|
-| `i18n.use(initReactI18next).init({ resources, lng, fallbackLng })` | `createI18n({ locales, locale })` |
-| `t('greeting', { name })` with `"greeting": "Hello {{name}}"` | `translate('Hello {name}', { name })` |
-| `t('open', { context: 'status' })` | `translate({ text: 'Open', context: 'status' })` |
-| `key_one` / `key_other` | `translate({ one: '…', other: '…' }, { count })` |
-| `const { t, i18n } = useTranslation()` | `const { translate, setLocale } = useI18n()` |
-| `i18n.changeLanguage('bn')` | `setLocale('bn')` |
-| `<Trans i18nKey="x" components={{ link: <a /> }} />` | `translate('Read the <link>terms</link>', { link: <a /> })` |
-| `i18next-browser-languagedetector` | `detectors: [storageDetector(), navigatorDetector()]` |
-| `i18next-http-backend` | `bn: () => import('./locales/bn.json')` or `() => fetch(url).then(r => r.json())` |
-| `i18next-parser` | `textlate extract` (and `translate` for AI) |
-
-### From next-intl
-
-| next-intl | textlate |
-|---|---|
-| `<NextIntlClientProvider locale messages>` | `<I18nProvider i18n={i18n} locale translations>` |
-| `useTranslations('ns')('title')` | `useI18n().translate('Page title')` |
-| `await getTranslations({ locale })` | `const { translate } = await i18n.load(locale)` |
-| `t.rich('x', { b: chunks => <b>{chunks}</b> })` | `translate('Hello <b>world</b>', { b: chunks => <b>{chunks}</b> })` |
-| `'{count, plural, one {# item} other {# items}}'` | `translate({ one: '{count} item', other: '{count} items' }, { count })` |
-| `useFormatter()`, `useLocale()` | `useI18n().format`, `useI18n().locale` |
-| `createMiddleware(routing)` | A short `proxy.ts` with `negotiateLocale()`; see [Next.js](#nextjs-app-router) |
-
-### From react-intl
-
-| react-intl | textlate |
-|---|---|
-| `<IntlProvider locale messages>` | `<I18nProvider i18n={i18n}>` |
-| `intl.formatMessage({ id, defaultMessage: 'Hello {name}' }, { name })` | `translate('Hello {name}', { name })` |
-| `defineMessage({ defaultMessage, description })` | `msg({ text, context })` |
-| `<FormattedMessage defaultMessage="…" values={…} />` | `translate('…', { … })` |
-| `intl.formatNumber`, `formatDate`, `formatList` | `format.number`, `.date`, `.list` |
-| `formatjs extract` | `textlate extract` (and `translate` for AI) |
-
 ## Contributing
 
 You are welcome to contribute! If you are adding a feature or fixing a bug, please contribute to the [GitHub repository](https://github.com/SheikhAminul/textlate/).
@@ -506,9 +464,3 @@ npm run bench
 ## License
 
 textlate is licensed under the [MIT license](https://github.com/SheikhAminul/textlate/blob/main/LICENSE).
-
-## Author
-
-|[![@SheikhAminul](https://avatars.githubusercontent.com/u/25372039?v=4&s=96)](https://github.com/SheikhAminul)|
-|:---:|
-|[@SheikhAminul](https://github.com/SheikhAminul)|
