@@ -1,0 +1,122 @@
+{
+	"name": "textlate",
+	"version": "1.0.0",
+	"description": "Write your text in your code, translate it with AI in one command. Lightweight, type-safe i18n for React 19 and Next.js App Router: ~3 kB, zero dependencies, no keys. A fast, modern alternative to react-i18next, react-intl and next-intl with plurals, rich text, Intl formatting, lazy locales, SSR and Server Components.",
+	"type": "module",
+	"sideEffects": false,
+	"exports": {
+		".": {
+			"types": "./dist/index.d.ts",
+			"default": "./dist/index.js"
+		},
+		"./react": {
+			"types": "./dist/react.d.ts",
+			"default": "./dist/react.js"
+		},
+		"./config": {
+			"types": "./dist/config.d.ts",
+			"default": "./dist/config.js"
+		},
+		"./package.json": "./package.json"
+	},
+	"bin": {
+		"textlate": "./dist/cli.js"
+	},
+	"files": [
+		"dist",
+		"src",
+		"llms.txt"
+	],
+	"engines": {
+		"node": ">=20"
+	},
+	"scripts": {
+		"build": "rm -rf dist && tsc -p tsconfig.build.json",
+		"dev": "tsc -p tsconfig.build.json --watch",
+		"typecheck": "tsc -p tsconfig.json",
+		"test": "vitest run",
+		"test:watch": "vitest",
+		"size": "npm run build && size-limit",
+		"prepublishOnly": "npm run typecheck && npm test && npm run build",
+		"bench": "npm run build && node bench/translate.js"
+	},
+	"repository": {
+		"type": "git",
+		"url": "git+https://github.com/SheikhAminul/textlate.git"
+	},
+	"keywords": [
+		"i18n",
+		"internationalization",
+		"localization",
+		"l10n",
+		"translation",
+		"ai-translation",
+		"machine-translation",
+		"llm",
+		"source-text",
+		"message-extraction",
+		"cli",
+		"react",
+		"react-19",
+		"nextjs",
+		"next.js",
+		"app-router",
+		"server-components",
+		"rsc",
+		"ssr",
+		"typescript",
+		"type-safe",
+		"pluralization",
+		"intl",
+		"rtl",
+		"lightweight",
+		"zero-dependency",
+		"react-i18next-alternative",
+		"react-intl-alternative",
+		"next-intl-alternative"
+	],
+	"author": "Sheikh Aminul <aminulfse@gmail.com>",
+	"license": "MIT",
+	"bugs": {
+		"url": "https://github.com/SheikhAminul/textlate/issues"
+	},
+	"homepage": "https://github.com/SheikhAminul/textlate#readme",
+	"peerDependencies": {
+		"react": ">=19.0.0"
+	},
+	"devDependencies": {
+		"@size-limit/preset-small-lib": "14.1.0",
+		"@testing-library/dom": "10.4.2",
+		"@testing-library/react": "16.3.3",
+		"@types/node": "24.19.1",
+		"@types/react": "19.3.0",
+		"@types/react-dom": "19.3.0",
+		"jsdom": "30.1.1",
+		"react": "19.3.0",
+		"react-dom": "19.3.0",
+		"size-limit": "14.1.0",
+		"tinybench": "6.2.0",
+		"typescript": "7.0.2",
+		"vitest": "5.0.3"
+	},
+	"size-limit": [
+		{
+			"name": "core",
+			"path": "dist/index.js",
+			"import": "{ createI18n, negotiateLocale, cookieDetector }",
+			"ignore": [
+				"react"
+			],
+			"limit": "3.2 kB"
+		},
+		{
+			"name": "react bindings",
+			"path": "dist/react.js",
+			"import": "{ I18nProvider, useI18n }",
+			"ignore": [
+				"react"
+			],
+			"limit": "1 kB"
+		}
+	]
+}

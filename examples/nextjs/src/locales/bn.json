@@ -1,0 +1,17 @@
+{
+  "Client Component": "ক্লায়েন্ট কম্পোনেন্ট",
+  "Click me": "ক্লিক করুন",
+  "Clicked {count} times": {
+    "one": "{count} বার ক্লিক করা হয়েছে",
+    "other": "{count} বার ক্লিক করা হয়েছে"
+  },
+  "Language": "ভাষা",
+  "textlate + Next.js": "textlate + Next.js",
+  "Welcome to {site}": "{site}-এ স্বাগতম",
+  "This page was rendered by a <b>Server Component</b>. Read the <docs>docs</docs>.": "এই পৃষ্ঠাটি একটি <b>সার্ভার কম্পোনেন্ট</b> দ্বারা রেন্ডার করা হয়েছে। <docs>ডকস</docs> পড়ুন।",
+  "{count} visits": {
+    "zero": "এখনও কোনো ভিজিট নেই",
+    "one": "{count}টি ভিজিট",
+    "other": "{count}টি ভিজিট"
+  }
+}

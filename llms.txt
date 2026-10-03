@@ -1,0 +1,85 @@
+# textlate
+
+> i18n without keys for React 19 and Next.js App Router: the text in your code is the message, `translate('Welcome, {name}!', { name })`. About 3 kB (min + brotli), zero dependencies, no build step. A CLI extracts the messages from the code and translates them with AI (Claude, OpenAI, Gemini or any OpenAI-compatible API), sending only text that isn't translated yet. It covers params, plurals (Intl.PluralRules), context for ambiguous text, rich text to React elements, Intl formatting, lazy-loaded locales, fallbacks, detection, SSR, Server Components and RTL.
+
+A modern alternative to react-i18next, react-intl and next-intl. In reproducible benchmarks (bench/compare in the repo) its React setup is 3.2 kB versus 18.2 kB for react-i18next + i18next, 12.5 kB for react-intl and 10.1 kB for next-intl, and it translates 5–60× faster.
+
+It is not the right choice when a project needs full ICU MessageFormat (`select`, `selectordinal`), the i18next plugin ecosystem, or built-in localized-pathname routing. There are no keys: messages are always the source text.
+
+## Install
+
+npm i textlate   (requires React 19+, ESM only; the CLI needs Node 20+)
+
+## Entry points
+
+- `textlate`: server-safe core. `createI18n`, `msg`, `negotiateLocale`, `matchLocale`, `parseAcceptLanguage`, `getDirection`, and the detectors `navigatorDetector`, `storageDetector`, `cookieDetector`, `queryDetector` and `htmlLangDetector`. Usable in Server Components, `generateMetadata`, route handlers, `proxy.ts`/middleware and Node.
+- `textlate/react`: `'use client'`. `I18nProvider`, `useI18n`.
+- `textlate/config`: `defineConfig` for `textlate.config.js`.
+- `textlate` command: `extract`, `translate`, `check`.
+
+## Setup (React)
+
+```ts
+// i18n.ts
+import { createI18n, navigatorDetector, storageDetector } from 'textlate'
+
+export const i18n = createI18n({
+	sourceLocale: 'en', // the language of the text in the code (the default); it needs no file
+	locales: { es: () => import('./locales/es.json'), bn: () => import('./locales/bn.json') }, // code-split
+	detectors: [storageDetector(), navigatorDetector()]
+})
+
+declare module 'textlate' {
+	interface Register {
+		i18n: typeof i18n
+	}
+}
+```
+
+```tsx
+import { I18nProvider, useI18n } from 'textlate/react'
+import { msg } from 'textlate'
+
+<Suspense fallback={null}><I18nProvider i18n={i18n}><App /></I18nProvider></Suspense>
+
+const { translate, format, locale, locales, setLocale, isPending, dir } = useI18n()
+translate('Hello, {name}!', { name: 'Ada' })                                      // string: "¡Hola, Ada!" in es
+translate({ one: '{count} message', other: '{count} messages' }, { count: 3 })   // plural, written in place
+translate({ text: 'Open', context: 'ticket status' })                            // context for ambiguous text
+translate('Read the <link>terms</link>.', { link: <a href="/terms" /> })         // React nodes, because a value is an element
+const labels = { active: msg('Active') }; translate(labels[status])              // text chosen at runtime
+```
+
+## Message syntax
+
+- A message is text, plural forms `{ zero?, one?, two?, few?, many?, other }`, or either with `context`: `{ text, context }`.
+- Params: `{name}` (single braces). Numbers, bigints and Dates are formatted for the locale. Params, plural `count` and tags are type-checked from the text.
+- Rich text: `<tag>…</tag>` and `<tag/>`, rendered with an element or a `chunks => ReactNode` function. `translate` returns React nodes when a value is an element or function, and a string otherwise (tags stripped).
+- Translation files (`src/locales/<locale>.json`) are flat: text → translation. A plural is stored under its `other` text, a message with context under `text // context`. `""` means not translated yet.
+- Untranslated text renders in the source language. `onUntranslated({ text, context, locale })` is called once per untranslated message and locale.
+- Fallback chain: `bn-BD` → `bn` → the text in the code.
+- Detection: `detectors` run after hydration; the first registered match wins. `setLocale` choices are saved by detectors with `persist` (storage, cookie); detected locales are not.
+
+## CLI
+
+- `npx textlate extract`: scans `src` for string literals and message objects passed to `translate`/`msg`. Updates `src/locales/<locale>.json`: adds new text as `""`, removes text no longer in the code (`--keep-unused` keeps it), keeps translations. Warns about text built from parts (`'Hi ' + name`).
+- `npx textlate translate`: extract, then translate only untranslated messages with AI, passing each message's context. Saves after each batch, validates params/tags/plural forms, retries invalid answers once, retries rate limits with backoff. `--dry-run` lists what would be sent, writing nothing.
+- `npx textlate check`: writes nothing; exits 1 if a file is out of date, untranslated or invalid. For CI before deploy.
+- Config in `textlate.config.{js,mjs,json,ts}`: `sourceLocale` ('en'), `locales` (default: each <locale>.json in `dir`), `dir` ('src/locales'), `include` (['src']), `functions` (['translate', 'msg']), `keepUnused`, `ai: { provider: 'anthropic' | 'openai' | 'google', model, apiKey, baseUrl, instructions, batchSize, concurrency, body, translate }`.
+- AI defaults: provider `anthropic`, model `claude-opus-5-5`. Keys from `ANTHROPIC_API_KEY`, `OPENAI_API_KEY` or `GEMINI_API_KEY` (also read from `.env`, `.env.local`). `openai` with `baseUrl` covers OpenRouter, Groq, Mistral, DeepSeek and Ollama. `ai.translate` plugs in any other SDK.
+- Typical scripts: `"i18n": "textlate translate"`, `"prebuild": "textlate translate"`, or `textlate check` in CI.
+
+## Setup (Next.js App Router)
+
+- `src/i18n.ts`: `createI18n({ locales: { … } })` plus the `Register` augmentation, as above, and `export const localeCookie = cookieDetector('NEXT_LOCALE')`. The language switcher calls `localeCookie.persist?.(next)` before navigating.
+- `src/proxy.ts`: redirect `/path` to `/{locale}/path`, choosing the locale with `i18n.match(request.cookies.get('NEXT_LOCALE')?.value) ?? negotiateLocale(request.headers.get('accept-language'), i18n.locales, i18n.sourceLocale)`.
+- `src/app/[lang]/layout.tsx`: `generateStaticParams = () => i18n.locales.map(lang => ({ lang }))`. Call `notFound()` unless `i18n.match(lang) === lang`. Render `<html lang={lang} dir={i18n.scope(lang).dir}>`.
+- `src/app/[lang]/providers.tsx` (`'use client'`): `<I18nProvider i18n={i18n} locale={lang}>`. Import the instance in this client file; it can't be passed as a prop from the server.
+- Server Components and `generateMetadata`: `const { translate, format } = await i18n.load(lang)`.
+- Client Components: `const { translate } = useI18n()`. Switch language by navigating to the other locale's URL.
+
+## Docs
+
+- [README](https://github.com/SheikhAminul/textlate#readme): full guide, CLI, API, comparison and migration from react-i18next, react-intl, next-intl
+- [Next.js example](https://github.com/SheikhAminul/textlate/tree/main/examples/nextjs)
+- [Benchmarks](https://github.com/SheikhAminul/textlate/tree/main/bench/compare)

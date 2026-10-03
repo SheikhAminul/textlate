@@ -1,0 +1,24 @@
+{
+  "Client Component": "مكوّن عميل",
+  "Click me": "انقر",
+  "Clicked {count} times": {
+    "zero": "لم يتم النقر",
+    "one": "نقرة واحدة",
+    "two": "نقرتان",
+    "few": "{count} نقرات",
+    "many": "{count} نقرة",
+    "other": "{count} نقرة"
+  },
+  "Language": "اللغة",
+  "textlate + Next.js": "textlate + Next.js",
+  "Welcome to {site}": "مرحبًا بك في {site}",
+  "This page was rendered by a <b>Server Component</b>. Read the <docs>docs</docs>.": "تم عرض هذه الصفحة بواسطة <b>مكوّن خادم</b>. اقرأ <docs>التوثيق</docs>.",
+  "{count} visits": {
+    "zero": "لا زيارات بعد",
+    "one": "زيارة واحدة",
+    "two": "زيارتان",
+    "few": "{count} زيارات",
+    "many": "{count} زيارة",
+    "other": "{count} زيارة"
+  }
+}
