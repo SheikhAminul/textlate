@@ -5,8 +5,12 @@ import { dirname, join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { buildPrompt, createProvider, translateMessages, type Runtime } from '../src/cli/ai.js'
 import { checkTranslation, isTranslated, pluralCategories, syncMessages } from '../src/cli/catalog.js'
+import { PassThrough } from 'node:stream'
+import { envFile, saveAISettings, saveEnvKey } from '../src/cli/edit.js'
+import { Cancelled, createPrompter, type Prompter } from '../src/cli/prompt.js'
 import { run } from '../src/cli/run.js'
 import { scanCode } from '../src/cli/scan.js'
+import { missingAISettings } from '../src/cli/setup.js'
 import type { TranslateRequest } from '../src/config.js'
 import type { Message } from '../src/types.js'
 
@@ -163,6 +167,33 @@ const fakeRuntime = (respond: (body: any, url: string, init: RequestInit) => Res
 		}) as typeof fetch
 	}
 	return { runtime, requests }
+}
+
+/** A `Prompter` that answers in order and records the questions. An answer of `undefined` takes the default. */
+const scripted = (answers: readonly unknown[]) => {
+	const asked: string[] = []
+	let next = 0
+	const take = () => (next < answers.length ? answers[next++] : undefined)
+	const prompt: Prompter = {
+		select: async <T>(question: string, choices: readonly { value: T }[], fallback?: T) => {
+			asked.push(question)
+			return (take() as T | undefined) ?? fallback ?? choices[0]!.value
+		},
+		text: async (question: string, fallback = '') => {
+			asked.push(question)
+			return (take() as string | undefined) ?? fallback
+		},
+		secret: async (question: string) => {
+			asked.push(question)
+			return (take() as string | undefined) ?? ''
+		},
+		confirm: async (question: string, fallback = true) => {
+			asked.push(question)
+			return (take() as boolean | undefined) ?? fallback
+		},
+		close: () => {}
+	}
+	return { prompt, asked }
 }
 
 /** What a model is sent per message: `{ text }` or `{ plural }`, with an optional `context`. */
@@ -361,7 +392,7 @@ describe('run', () => {
 		writeFileSync(join(cwd, path), content)
 	}
 	const read = (path: string) => JSON.parse(readFileSync(join(cwd, path), 'utf8')) as Record<string, unknown>
-	const cli = async (args: string[], options: Partial<Runtime> = {}) => {
+	const cli = async (args: string[], options: Partial<Runtime> & { prompt?: Prompter } = {}) => {
 		const output: string[] = []
 		const code = await run(args, { cwd, log: line => output.push(line), error: line => output.push(line), ...options })
 		return { code, output: output.join('\n') }
@@ -473,5 +504,270 @@ describe('run', () => {
 		expect((await cli([])).code).toBe(2)
 		expect((await cli(['nope'])).output).toContain('Unknown command "nope"')
 		expect((await cli(['--help'])).output).toContain('Usage: textlate <command>')
+	})
+
+	describe('setup', () => {
+		const spanish = () => fakeRuntime(body => json({ stop_reason: 'end_turn', content: [{ type: 'text', text: JSON.stringify(answer(body, toSpanish)) }] }))
+
+		it('asks which AI to use when nothing is configured, then saves and uses it', async () => {
+			const { prompt, asked } = scripted(['anthropic', 'claude-sonnet-5-5', 'A banking app.', 'sk-entered', true])
+			const { runtime, requests } = spanish()
+			const { code, output } = await cli(['translate', '-l', 'es'], { ...runtime, env: {}, prompt })
+			expect(code).toBe(0)
+			expect(asked).toEqual([
+				'Which AI should translate your messages?',
+				'Which model?',
+				'Instructions for the translator',
+				'ANTHROPIC_API_KEY',
+				'Save ANTHROPIC_API_KEY to .env?'
+			])
+			// The answers are used for this run, including the instructions.
+			expect(requests[0]?.headers['x-api-key']).toBe('sk-entered')
+			expect(requests[0]?.body.model).toBe('claude-sonnet-5-5')
+			expect(requests[0]?.body.system).toContain('A banking app.')
+			expect(read('src/locales/es.json')['I am fine.']).toBe('ES I am fine.')
+			// The provider, model and instructions go to a config file; the key goes to .env.
+			const config = readFileSync(join(cwd, 'textlate.config.mjs'), 'utf8')
+			expect(config).toContain("import { defineConfig } from 'textlate/config'")
+			expect(config).toContain("provider: 'anthropic'")
+			expect(config).toContain("model: 'claude-sonnet-5-5'")
+			expect(config).toContain("instructions: 'A banking app.'")
+			expect(readFileSync(join(cwd, '.env'), 'utf8')).toBe('ANTHROPIC_API_KEY=sk-entered\n')
+			expect(output).toContain('Saved the AI settings to textlate.config.mjs')
+			expect(output).toContain('Saved ANTHROPIC_API_KEY to .env')
+		})
+
+		it('writes the settings into an existing config, and keeps a declined key out of .env', async () => {
+			write('textlate.config.mjs', "export default {\n\tlocales: ['es'],\n\tai: { instructions: 'Formal.' }\n}\n")
+			const { prompt, asked } = scripted(['openai', 'gpt-test', 'sk-no-save', false])
+			const { runtime, requests } = fakeRuntime(body => json({ choices: [{ message: { content: JSON.stringify(answer(body, toSpanish)) } }] }))
+			const { code, output } = await cli(['translate'], { ...runtime, env: {}, prompt })
+			expect(code).toBe(0)
+			// `instructions` is already set, so it isn't asked for again.
+			expect(asked).toEqual(['Which AI should translate your messages?', 'Model', 'OPENAI_API_KEY', 'Save OPENAI_API_KEY to .env?'])
+			expect(requests[0]?.headers.authorization).toBe('Bearer sk-no-save')
+			const config = readFileSync(join(cwd, 'textlate.config.mjs'), 'utf8')
+			expect(config).toContain("provider: 'openai'")
+			expect(config).toContain("model: 'gpt-test'")
+			expect(config).toContain("instructions: 'Formal.'")
+			expect(config).toContain("locales: ['es']")
+			expect(existsSync(join(cwd, '.env'))).toBe(false)
+			expect(output).toContain('Not saved. Set OPENAI_API_KEY in your environment before the next run.')
+		})
+
+		it('asks only for what is missing, and merges into a JSON config', async () => {
+			write('textlate.config.json', `${JSON.stringify({ locales: ['es'], ai: { provider: 'openai', apiKey: 'sk-config' } }, null, 2)}\n`)
+			const { prompt, asked } = scripted(['openai', 'gpt-test', '', true])
+			const { runtime, requests } = fakeRuntime(body => json({ choices: [{ message: { content: JSON.stringify(answer(body, toSpanish)) } }] }))
+			const { code } = await cli(['translate'], { ...runtime, env: {}, prompt })
+			expect(code).toBe(0)
+			expect(asked).toEqual([
+				'Which AI should translate your messages?',
+				'Model',
+				'Instructions for the translator',
+				'OPENAI_API_KEY is already set in the config. Use it?'
+			])
+			expect(requests[0]?.headers.authorization).toBe('Bearer sk-config')
+			expect(read('textlate.config.json')).toEqual({ locales: ['es'], ai: { provider: 'openai', apiKey: 'sk-config', model: 'gpt-test' } })
+		})
+
+		it('runs on its own with the setup command, before there is anything to translate', async () => {
+			mkdirSync(join(cwd, '.git'))
+			write('.gitignore', 'node_modules\n')
+			const { prompt } = scripted(['google', 'gemini-x', '', 'g-key', true])
+			const { code, output } = await cli(['setup'], { env: {}, prompt })
+			expect(code).toBe(0)
+			expect(readFileSync(join(cwd, 'textlate.config.mjs'), 'utf8')).toContain("provider: 'google'")
+			expect(readFileSync(join(cwd, '.env'), 'utf8')).toContain('GEMINI_API_KEY=g-key')
+			expect(output).toContain('.env is not in .gitignore')
+			expect(output).toContain('Run "textlate translate"')
+		})
+
+		it('asks nothing when a key is already in the environment', async () => {
+			const { prompt, asked } = scripted([])
+			const { runtime } = spanish()
+			const { code } = await cli(['translate', '-l', 'es'], { ...runtime, env: { ANTHROPIC_API_KEY: 'k' }, prompt })
+			expect(code).toBe(0)
+			expect(asked).toEqual([])
+		})
+
+		it('says how to configure AI when it cannot ask', async () => {
+			const translate = await cli(['translate', '-l', 'es', '--no-input'], { env: {} })
+			expect(translate.code).toBe(2)
+			expect(translate.output).toContain("AI translation isn't set up: no API key for the anthropic provider")
+			expect(translate.output).toContain('Run "textlate setup" to configure it, or set ANTHROPIC_API_KEY in the environment or .env')
+
+			const setup = await cli(['setup'], { env: {} })
+			expect(setup.code).toBe(2)
+			expect(setup.output).toContain('needs a terminal')
+		})
+	})
+})
+
+describe('missingAISettings', () => {
+	it('knows when translation is ready to run', () => {
+		expect(missingAISettings({}, {})).toEqual(['API key'])
+		expect(missingAISettings({}, { ANTHROPIC_API_KEY: 'k' })).toEqual([])
+		expect(missingAISettings({ apiKey: 'k' }, {})).toEqual([])
+		expect(missingAISettings({ translate: async () => ({}) }, {})).toEqual([])
+		expect(missingAISettings({ provider: 'openai' }, {})).toEqual(['model', 'API key'])
+		expect(missingAISettings({ provider: 'openai', model: 'gpt-x' }, { OPENAI_API_KEY: 'k' })).toEqual([])
+		expect(missingAISettings({ provider: 'google', model: 'gemini-x' }, { GOOGLE_API_KEY: 'k' })).toEqual([])
+		// A local server needs no key.
+		expect(missingAISettings({ provider: 'openai', model: 'llama', baseUrl: 'http://localhost:11434/v1' }, {})).toEqual([])
+	})
+})
+
+describe('config and .env files', () => {
+	let cwd: string
+	const write = (path: string, content: string) => writeFileSync(join(cwd, path), content)
+	const read = (path: string) => readFileSync(join(cwd, path), 'utf8')
+
+	beforeEach(() => {
+		cwd = mkdtempSync(join(tmpdir(), 'textlate-'))
+	})
+	afterEach(() => rmSync(cwd, { recursive: true, force: true }))
+
+	it('adds an ai block to a config that has none', () => {
+		write('textlate.config.js', "import { defineConfig } from 'textlate/config'\n\nexport default defineConfig({\n\tlocales: ['es'] // for now\n})\n")
+		expect(saveAISettings(cwd, join(cwd, 'textlate.config.js'), { provider: 'openai', model: 'gpt-x' })).toEqual({ file: 'textlate.config.js' })
+		expect(read('textlate.config.js')).toBe(
+			"import { defineConfig } from 'textlate/config'\n\nexport default defineConfig({\n\tai: {\n\t\tprovider: 'openai',\n\t\tmodel: 'gpt-x'\n\t},\n\tlocales: ['es'] // for now\n})\n"
+		)
+	})
+
+	it('replaces settings that are already in the ai block, and keeps the others', () => {
+		write('textlate.config.ts', "export default {\n\tai: {\n\t\tprovider: 'anthropic',\n\t\tinstructions: 'Formal, and {keep} this.'\n\t}\n}\n")
+		saveAISettings(cwd, join(cwd, 'textlate.config.ts'), { provider: 'google', model: "gemini's" })
+		const text = read('textlate.config.ts')
+		expect(text).toContain("provider: 'google'")
+		expect(text).toContain("model: 'gemini\\'s'")
+		expect(text).toContain("instructions: 'Formal, and {keep} this.'")
+		expect(text).not.toContain('anthropic')
+	})
+
+	it('creates a config file when the project has none', () => {
+		write('package.json', '{ "type": "module" }')
+		expect(saveAISettings(cwd, undefined, { provider: 'anthropic' })).toEqual({ file: 'textlate.config.js' })
+		expect(read('textlate.config.js')).toBe("import { defineConfig } from 'textlate/config'\n\nexport default defineConfig({\n\tai: {\n\t\tprovider: 'anthropic'\n\t}\n})\n")
+	})
+
+	it('changes nothing and hands back a snippet when it cannot edit the config', () => {
+		const shapes = ['const config = { ai: {} }\nexport { config }\n', 'export default defineConfig({\n\tai: settings\n})\n', 'export default {\n\tai: {\n}\n']
+		for (const shape of shapes) {
+			write('textlate.config.js', shape)
+			const edit = saveAISettings(cwd, join(cwd, 'textlate.config.js'), { provider: 'openai', model: 'gpt-x' })
+			expect(edit.snippet).toBe("ai: {\n\tprovider: 'openai',\n\tmodel: 'gpt-x'\n}")
+			expect(read('textlate.config.js')).toBe(shape)
+		}
+	})
+
+	it('sets a key in .env, leaving the other lines alone', () => {
+		write('.env', '# keys\nANTHROPIC_API_KEY=old\nDATABASE_URL=x')
+		expect(saveEnvKey(cwd, 'ANTHROPIC_API_KEY', 'new')).toEqual({ file: '.env', ignored: false })
+		expect(read('.env')).toBe('# keys\nANTHROPIC_API_KEY=new\nDATABASE_URL=x')
+
+		expect(saveEnvKey(cwd, 'OPENAI_API_KEY', 'sk-1')).toEqual({ file: '.env', ignored: false })
+		expect(read('.env')).toBe('# keys\nANTHROPIC_API_KEY=new\nDATABASE_URL=x\nOPENAI_API_KEY=sk-1\n')
+	})
+
+	it('prefers .env.local, and reports whether git ignores it', () => {
+		write('.env.local', 'A=1\n')
+		write('.gitignore', 'node_modules\n.env*\n')
+		expect(envFile(cwd)).toBe('.env.local')
+		expect(saveEnvKey(cwd, 'GEMINI_API_KEY', 'g key')).toEqual({ file: '.env.local', ignored: true })
+		expect(read('.env.local')).toBe('A=1\nGEMINI_API_KEY="g key"\n')
+	})
+})
+
+describe('createPrompter', () => {
+	/** A prompter on a fake terminal: `type` sends keystrokes, `shown` is what the terminal displays. */
+	const terminal = ({ tty = true } = {}) => {
+		const input = new PassThrough() as PassThrough & { isTTY?: boolean; setRawMode?: (raw: boolean) => void }
+		const output = new PassThrough()
+		let shown = ''
+		output.on('data', chunk => {
+			shown += String(chunk)
+		})
+		if (tty) {
+			input.isTTY = true
+			input.setRawMode = () => {}
+		}
+		return { prompt: createPrompter({ input, output }), type: (text: string) => setTimeout(() => input.write(text), 0), shown: () => shown, input }
+	}
+
+	const choices = [
+		{ value: 'anthropic', label: 'Anthropic', hint: 'Claude' },
+		{ value: 'openai', label: 'OpenAI' }
+	]
+
+	it('picks from a list by number, by name or by default', async () => {
+		const { prompt, type, shown } = terminal()
+		type('2\n')
+		expect(await prompt.select('Which AI?', choices, 'anthropic')).toBe('openai')
+		type('OpenAI\n')
+		expect(await prompt.select('Which AI?', choices)).toBe('openai')
+		type('\n')
+		expect(await prompt.select('Which AI?', choices, 'openai')).toBe('openai')
+		type('7\nnope\n1\n')
+		expect(await prompt.select('Which AI?', choices)).toBe('anthropic')
+		prompt.close()
+		expect(shown()).toContain('  1) Anthropic (Claude)  [default]')
+		expect(shown()).toContain('  2) OpenAI  [default]')
+		expect(shown()).toContain('Answer with a number from 1 to 2.')
+	})
+
+	it('reads text, a default and yes or no', async () => {
+		const { prompt, type, shown } = terminal()
+		type('  gpt-x  \n')
+		expect(await prompt.text('Model', 'claude')).toBe('gpt-x')
+		type('\n')
+		expect(await prompt.text('Model', 'claude')).toBe('claude')
+		type('\n')
+		expect(await prompt.confirm('Save?', false)).toBe(false)
+		type('maybe\nY\n')
+		expect(await prompt.confirm('Save?', false)).toBe(true)
+		prompt.close()
+		expect(shown()).toContain('Model [claude]: ')
+		expect(shown()).toContain('Save? [y/N] ')
+	})
+
+	it('never echoes a secret, and takes backspace', async () => {
+		const { prompt, type, shown } = terminal()
+		type('sk-secrex\u007fet\n')
+		expect(await prompt.secret('ANTHROPIC_API_KEY')).toBe('sk-secreet')
+		prompt.close()
+		expect(shown()).not.toContain('sk-secre')
+		expect(shown()).toContain('ANTHROPIC_API_KEY: *********\b \b**')
+	})
+
+	it('keeps what was typed before the question', async () => {
+		const { prompt, type } = terminal()
+		type('openai\ngpt-x\n')
+		await new Promise(done => setTimeout(done, 10))
+		expect(await prompt.select('Which AI?', choices)).toBe('openai')
+		expect(await prompt.text('Model')).toBe('gpt-x')
+		prompt.close()
+	})
+
+	it('cancels on Ctrl-C and when the input ends', async () => {
+		const { prompt, type } = terminal()
+		type('\u0003')
+		await expect(prompt.secret('ANTHROPIC_API_KEY')).rejects.toBeInstanceOf(Cancelled)
+		// Every question after that is cancelled too, rather than waiting for input that will not come.
+		await expect(prompt.text('Model')).rejects.toBeInstanceOf(Cancelled)
+
+		const ended = terminal()
+		setTimeout(() => ended.input.end(), 0)
+		await expect(ended.prompt.text('Model')).rejects.toBeInstanceOf(Cancelled)
+	})
+
+	it('works without a terminal, where nothing is echoed anyway', async () => {
+		const { prompt, type, shown } = terminal({ tty: false })
+		type('2\nsk-piped\n')
+		expect(await prompt.select('Which AI?', choices)).toBe('openai')
+		expect(await prompt.secret('ANTHROPIC_API_KEY')).toBe('sk-piped')
+		prompt.close()
+		expect(shown()).not.toContain('sk-piped')
 	})
 })

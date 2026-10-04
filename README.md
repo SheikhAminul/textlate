@@ -33,7 +33,7 @@ npx textlate translate    # finds the text above, translates only what's new, wr
 ## Features
 
 - **Source text as messages**, with plurals and context written in place, and `msg()` for text chosen at runtime.
-- **AI translation CLI**: `extract`, `translate` and `check` (a gate for CI before you deploy).
+- **AI translation CLI**: `extract`, `translate` and `check` (a gate for CI before you deploy). The first run asks which provider, model and key to use, and saves them.
 - **Type-safe** params, plural `count` and rich-text tags, read from the text itself.
 - **Small**: about 3 kB for the core and 0.5 kB for the React bindings (minified and brotli-compressed). No dependencies.
 - **Fast**: each message resolves once per locale and is then served from a memo. Plain text is never parsed, and components re-render only when the locale changes.
@@ -57,6 +57,7 @@ Each library translated the same three messages into Spanish with the same tooli
 | **With a param** | **7.7 M** | 0.28 M | 0.86 M | 0.29 M | – |
 | **Plural** | **8.7 M** | 0.14 M | 0.26 M | 0.15 M | – |
 | Messages written in the code, no keys | ✓ | via config | via `defaultMessage` | – | ✓¹ |
+| AI translation built in | ✓ | via other tools | via other tools | via other tools | via other tools |
 | Server Components | ✓ | ✓ | ✓ | ✓ | ✓ |
 | Works without a build step | ✓ | ✓ | ✓ | ✓ | –¹ |
 | Full ICU MessageFormat (`select`, ordinals) | – | via plugin | ✓ | ✓ | ✓ |
@@ -186,6 +187,7 @@ The `textlate` command keeps the translation files in sync with your code.
 | `textlate extract` | Finds the messages in your code and updates `src/locales/<locale>.json`: new text is added untranslated (`""`), text no longer in the code is removed, and translations are kept |
 | `textlate translate` | Runs `extract`, then translates every untranslated message with AI |
 | `textlate check` | Writes nothing. Fails if a file is out of date, untranslated or invalid. Use it in CI |
+| `textlate setup` | Asks which AI to translate with, and saves the answers |
 
 ```jsonc
 // package.json
@@ -196,6 +198,39 @@ The `textlate` command keeps the translation files in sync with your code.
 ```
 
 With `prebuild`, every `npm run build` (and so every deploy) translates new text first. If your build environment has no API key, run `npm run i18n` yourself, commit the translation files, and use `textlate check` in CI instead, so nothing ships untranslated.
+
+### The first run
+
+`translate` needs a model and an API key. When it has neither from the config nor the environment, it asks once, instead of stopping with an error:
+
+```
+$ npx textlate translate
+Found 42 messages in 18 files.
+No API key to translate with yet. Setting that up once:
+Which AI should translate your messages?
+  1) Anthropic (Claude)  [default]
+  2) OpenAI (GPT)
+  3) Google (Gemini)
+  4) OpenAI-compatible API (OpenRouter, Groq, Mistral, DeepSeek, a local Ollama)
+> 1
+Which model?
+  1) claude-opus-5-5 (most capable)  [default]
+  2) claude-sonnet-5-5 (balanced)
+  3) claude-haiku-4-5-20251001 (fastest and cheapest)
+  4) Another model
+> 1
+Instructions for the translator: A banking app for small businesses. Formal tone.
+ANTHROPIC_API_KEY: ********************
+Saved the AI settings to textlate.config.js.
+Save ANTHROPIC_API_KEY to .env? [Y/n] y
+Saved ANTHROPIC_API_KEY to .env.
+  src/locales/es.json: 42/42 translated (+42)
+```
+
+- **The provider, model and instructions go to `textlate.config.js`**, next to whatever is already in it. A config file is created when the project has none.
+- **The key goes to `.env.local`, or `.env`** when there is no `.env.local`, and only if you say yes: it is never written to the config file. Say no and the key is used for that run only. If git doesn't ignore the file yet, the CLI says so.
+- **Only what's missing is asked for.** With `ANTHROPIC_API_KEY` already in your environment, nothing is asked at all. Run `textlate setup` yourself to change the provider, the model or the key later.
+- **Nothing is ever asked without a terminal**, so CI and scripts fail with the setting to add instead of hanging. `--no-input` does the same on a terminal.
 
 ### Config
 
@@ -236,7 +271,7 @@ export default defineConfig({
 | `ai.body` | none | Extra request fields, e.g. `{ temperature: 0 }` or `{ output_config: { effort: 'low' } }` |
 | `ai.translate` | none | Your own function, for any other SDK or service. It receives the messages by id (with their context), the locale, its plural categories and the prompt, and returns translations by id |
 
-Command-line flags override the config: `--locales es,bn`, `--dir`, `--source`, `--provider`, `--model`, `--keep-unused`, `--config <file>`, and `--dry-run` (shows what `translate` would send, without calling the AI or writing files). Paths after the command replace `include`: `textlate translate app components`.
+Command-line flags override the config: `--locales es,bn`, `--dir`, `--source`, `--provider`, `--model`, `--keep-unused`, `--config <file>`, `--dry-run` (shows what `translate` would send, without calling the AI or writing files) and `--no-input` (never ask questions). Paths after the command replace `include`: `textlate translate app components`.
 
 ### How translation works
 
@@ -425,7 +460,7 @@ How it fits together:
 
 ### `textlate/config` and the CLI
 
-`defineConfig(config)` type-checks `textlate.config.js`. The `textlate` command (`extract`, `translate`, `check`) is described in [Translating with AI](#translating-with-ai); `npx textlate --help` lists every option.
+`defineConfig(config)` type-checks `textlate.config.js`. The `textlate` command (`extract`, `translate`, `check`, `setup`) is described in [Translating with AI](#translating-with-ai); `npx textlate --help` lists every option.
 
 ## Performance
 

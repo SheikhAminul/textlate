@@ -12,7 +12,8 @@ export interface Runtime {
 export type Provider = (request: TranslateRequest) => Promise<Record<string, unknown>>
 
 export const DEFAULT_MODEL = 'claude-opus-5-5'
-const API_KEYS = { anthropic: ['ANTHROPIC_API_KEY'], openai: ['OPENAI_API_KEY'], google: ['GEMINI_API_KEY', 'GOOGLE_API_KEY'] }
+/** The environment variables each provider's key is read from, the first being the one the CLI writes. */
+export const API_KEYS = { anthropic: ['ANTHROPIC_API_KEY'], openai: ['OPENAI_API_KEY'], google: ['GEMINI_API_KEY', 'GOOGLE_API_KEY'] }
 // Models that take server-side refusal fallbacks (`fallbacks: "default"`) on the Claude API.
 const FALLBACK_MODELS = /^claude-(?:fable-5-1|opus-5-5|opus-5|sonnet-5-5)$/
 

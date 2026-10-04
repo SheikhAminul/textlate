@@ -7,7 +7,9 @@ import type { AIConfig, Config } from '../config.js'
 import type { Message } from '../types.js'
 import { createProvider, translateMessages, type Runtime } from './ai.js'
 import { checkTranslation, isTranslated, readLocaleFile, serialize, syncMessages, writeLocaleFile, type LocaleFile, type LocaleMessages } from './catalog.js'
+import { Cancelled, createPrompter, isInteractive, type Prompter } from './prompt.js'
 import { scanFiles } from './scan.js'
+import { missingAISettings, setupAI, setupHint } from './setup.js'
 
 const CONFIG_FILES = ['ts', 'mts', 'js', 'mjs', 'json'].map(extension => `textlate.config.${extension}`)
 const LOCALE_FILE = /^([a-z]{2,3}(?:[-_][a-z\d]+)*)\.json$/i
@@ -18,6 +20,7 @@ Commands:
   extract    Find the messages in your code and update <dir>/<locale>.json
   translate  Extract, then translate what isn't translated yet with AI
   check      Fail if a locale file is out of date, untranslated or invalid (for CI)
+  setup      Choose the AI provider, model and API key, and save them
 
 Arguments:
   paths                    Files or directories to scan (default: src)
@@ -32,11 +35,14 @@ Options:
       --model <id>         AI model (default for anthropic: claude-opus-5-5)
       --keep-unused        Keep translations of text that is no longer in the code
       --dry-run            translate: list what would be translated, without calling the AI
+      --no-input           Never ask questions: fail instead (for CI)
   -h, --help               Show this help
 
 API keys come from ANTHROPIC_API_KEY, OPENAI_API_KEY or GEMINI_API_KEY, also read from .env and .env.local.
+With none of them set, translate asks which provider, model and key to use, and saves them.
 
 Examples:
+  textlate setup
   textlate extract --locales es,bn
   textlate translate
   textlate check`
@@ -51,17 +57,19 @@ export interface RunOptions {
 	sleep?: (ms: number) => Promise<void>
 	/** Defaults to `process.env`, with `.env` and `.env.local` underneath. */
 	env?: Readonly<Record<string, string | undefined>>
+	/** How setup asks its questions. Defaults to the terminal, or to nothing when there is none. */
+	prompt?: Prompter | undefined
 }
 
-/** The config from `path`, or from the first `textlate.config.*` in `cwd`. */
-export const loadConfig = async (cwd: string, path?: string): Promise<Config> => {
+/** The config from `path`, or from the first `textlate.config.*` in `cwd`, with the file it came from. */
+export const loadConfig = async (cwd: string, path?: string): Promise<{ config: Config; file?: string }> => {
 	const file = path ? resolve(cwd, path) : CONFIG_FILES.map(name => join(cwd, name)).find(existsSync)
-	if (!file) return {}
+	if (!file) return { config: {} }
 	if (!existsSync(file)) throw new UsageError(`Config file ${path} not found.`)
-	if (file.endsWith('.json')) return JSON.parse(readFileSync(file, 'utf8')) as Config
+	if (file.endsWith('.json')) return { config: JSON.parse(readFileSync(file, 'utf8')) as Config, file }
 	try {
 		const module = (await import(pathToFileURL(file).href)) as { default?: Config }
-		return module.default ?? (module as Config)
+		return { config: module.default ?? (module as Config), file }
 	} catch (error) {
 		if ((error as { code?: string }).code === 'ERR_UNKNOWN_FILE_EXTENSION') {
 			throw new UsageError(`Node ${process.version} can't load ${basename(file)}. Use Node 22.18 or later, or a .js config.`)
@@ -148,6 +156,7 @@ export const run = async (args: readonly string[], options: RunOptions = {}): Pr
 				model: { type: 'string' },
 				'keep-unused': { type: 'boolean' },
 				'dry-run': { type: 'boolean' },
+				'no-input': { type: 'boolean' },
 				help: { type: 'boolean', short: 'h' }
 			}
 		})
@@ -161,13 +170,26 @@ export const run = async (args: readonly string[], options: RunOptions = {}): Pr
 		log(HELP)
 		return 0
 	}
-	if (command !== 'extract' && command !== 'translate' && command !== 'check') {
+	if (command !== 'extract' && command !== 'translate' && command !== 'check' && command !== 'setup') {
 		error(`${command ? `Unknown command "${command}".` : 'Missing command.'}\n\n${HELP}`)
 		return 2
 	}
 
+	// Questions are only asked on a terminal, so a script or a CI run fails with an explanation instead of hanging.
+	const prompt = options.prompt ?? (values['no-input'] || !isInteractive() ? undefined : createPrompter())
+
 	try {
-		const config = await loadConfig(cwd, values.config)
+		const { config, file: configFile } = await loadConfig(cwd, values.config)
+		const env = options.env ?? readEnv(cwd)
+		let ai: AIConfig = { ...config.ai, ...(values.provider && { provider: values.provider as AIConfig['provider'] }), ...(values.model && { model: values.model }) }
+
+		if (command === 'setup') {
+			if (!prompt) throw new UsageError('textlate setup asks questions, so it needs a terminal. Set ai.provider and ai.model in textlate.config.js instead.')
+			await setupAI({ cwd, ai, configFile, env, prompt, log })
+			log('Ready. Run "textlate translate" to translate your messages.')
+			return 0
+		}
+
 		const sourceLocale = values.source ?? config.sourceLocale ?? 'en'
 		const dir = resolve(cwd, values.dir ?? config.dir ?? 'src/locales')
 		const existing = existsSync(dir) ? readdirSync(dir).flatMap(name => LOCALE_FILE.exec(name)?.[1] ?? []) : []
@@ -223,11 +245,16 @@ export const run = async (args: readonly string[], options: RunOptions = {}): Pr
 		const failures = new Map<string, string[]>()
 
 		if (command === 'translate') {
-			const ai: AIConfig = { ...config.ai, ...(values.provider && { provider: values.provider as AIConfig['provider'] }), ...(values.model && { model: values.model }) }
+			const missing = pending.length ? missingAISettings(ai, env) : []
+			if (missing.length) {
+				if (!prompt) throw new UsageError(setupHint(cwd, ai, missing))
+				log(`No ${missing.join(' or ')} to translate with yet. Setting that up once:`)
+				ai = await setupAI({ cwd, ai, configFile, env, prompt, log })
+			}
 			const runtime: Runtime = {
 				fetch: options.fetch ?? globalThis.fetch,
 				sleep: options.sleep ?? (ms => new Promise(done => setTimeout(done, ms))),
-				env: options.env ?? readEnv(cwd)
+				env
 			}
 			const provider = pending.length ? createProvider(ai, runtime) : undefined
 			await pool(pending, ai.concurrency ?? 4, async ({ state, messages }) => {
@@ -265,7 +292,13 @@ export const run = async (args: readonly string[], options: RunOptions = {}): Pr
 		}
 		return failures.size ? 1 : 0
 	} catch (cause) {
+		if (cause instanceof Cancelled) {
+			error('[textlate] Cancelled.')
+			return 130
+		}
 		error(`[textlate] ${(cause as Error).message}`)
 		return cause instanceof UsageError ? 2 : 1
+	} finally {
+		if (!options.prompt) prompt?.close()
 	}
 }
