@@ -199,32 +199,80 @@ The `textlate` command keeps the translation files in sync with your code.
 
 With `prebuild`, every `npm run build` (and so every deploy) translates new text first. If your build environment has no API key, run `npm run i18n` yourself, commit the translation files, and use `textlate check` in CI instead, so nothing ships untranslated.
 
+### What a run reports
+
+Every command starts by counting: the languages, the messages found in your code, the translations already in place, and what is missing. Nothing is sent or written before you can see that.
+
+```
+$ npx textlate check
+
+  textlate check
+
+  Source    en  English
+  Locales   4   es, bn, ar, ja
+  Messages  42  in 18 files
+  Files     src/locales/<locale>.json
+  Config    textlate.config.js
+
+  Catalogs
+
+  ╭────────┬───────────┬──────────────┬─────────┬─────┬────────┬─────────╮
+  │ Locale │ Language  │   Translated │ Missing │ New │ Unused │ Invalid │
+  ├────────┼───────────┼──────────────┼─────────┼─────┼────────┼─────────┤
+  │ es     │ Spanish   │   40/42  95% │       2 │  +2 │      – │       1 │
+  │ bn     │ Bangla    │  42/42  100% │       – │   – │      – │       – │
+  │ ar     │ Arabic    │  42/42  100% │       – │   – │     -1 │       – │
+  │ ja     │ Japanese  │   38/42  90% │       4 │  +2 │      – │       – │
+  ├────────┼───────────┼──────────────┼─────────┼─────┼────────┼─────────┤
+  │ Total  │ 4 locales │ 162/168  96% │       6 │  +4 │     -1 │       1 │
+  ╰────────┴───────────┴──────────────┴─────────┴─────┴────────┴─────────╯
+
+  ✖ src/locales/es.json  2 untranslated (run textlate translate) · 1 invalid translation
+      "Welcome, {firstName}!" is missing {firstName}
+  ✔ src/locales/bn.json  up to date
+  ✖ src/locales/ar.json  out of date (run textlate extract)
+  ✖ src/locales/ja.json  4 untranslated (run textlate translate)
+
+  ✖ 3 of 4 locales need attention.
+```
+
+- **Translated** is how many of the messages in your code that file has, **Missing** how many are still untranslated, **New** the messages this run adds to the file (`check` writes nothing, so there they are the ones `extract` would add) and **Unused** the entries it drops. **Invalid** counts translations whose `{params}`, `<tags>` or plural forms don't match the source; each one is listed under the file. A column is left out when it has nothing to report.
+- **`translate` prints the table twice**: once before it calls the AI, and once after, with a progress bar in between. `--dry-run` stops after the first one.
+- **Plain text when it isn't a terminal**, so logs and CI stay readable. `--no-color` or `NO_COLOR` turns the colours off, `NO_UNICODE` draws the tables in ASCII.
+
 ### The first run
 
 `translate` needs a model and an API key. When it has neither from the config nor the environment, it asks once, instead of stopping with an error:
 
 ```
 $ npx textlate translate
-Found 42 messages in 18 files.
-No API key to translate with yet. Setting that up once:
-Which AI should translate your messages?
-  1) Anthropic (Claude)  [default]
-  2) OpenAI (GPT)
-  3) Google (Gemini)
-  4) OpenAI-compatible API (OpenRouter, Groq, Mistral, DeepSeek, a local Ollama)
-> 1
-Which model?
-  1) claude-opus-5-5 (most capable)  [default]
-  2) claude-sonnet-5-5 (balanced)
-  3) claude-haiku-4-5-20251001 (fastest and cheapest)
-  4) Another model
-> 1
-Instructions for the translator: A banking app for small businesses. Formal tone.
-ANTHROPIC_API_KEY: ********************
-Saved the AI settings to textlate.config.js.
-Save ANTHROPIC_API_KEY to .env? [Y/n] y
-Saved ANTHROPIC_API_KEY to .env.
-  src/locales/es.json: 42/42 translated (+42)
+
+  textlate translate
+  …
+  › No API key to translate with yet. Setting that up once:
+
+  Which AI should translate your messages?
+    1) Anthropic (Claude)  [default]
+    2) OpenAI (GPT)
+    3) Google (Gemini)
+    4) OpenAI-compatible API (OpenRouter, Groq, Mistral, DeepSeek, a local Ollama)
+  > 1
+  Which model?
+    1) claude-opus-5-5 (most capable)  [default]
+    2) claude-sonnet-5-5 (balanced)
+    3) claude-haiku-4-5-20251001 (fastest and cheapest)
+    4) Another model
+  > 1
+  Instructions for the translator: A banking app for small businesses. Formal tone.
+  ANTHROPIC_API_KEY: ********************
+  Saved the AI settings to textlate.config.js.
+  Save ANTHROPIC_API_KEY to .env? [Y/n] y
+  Saved ANTHROPIC_API_KEY to .env.
+
+  › Translating 42 messages into 1 locale with claude-opus-5-5…
+  ████████░░  34/42  es 34/42
+
+  ✔ Translated 42 messages. Every locale is complete.
 ```
 
 - **The provider, model and instructions go to `textlate.config.js`**, next to whatever is already in it. A config file is created when the project has none.
@@ -271,7 +319,7 @@ export default defineConfig({
 | `ai.body` | none | Extra request fields, e.g. `{ temperature: 0 }` or `{ output_config: { effort: 'low' } }` |
 | `ai.translate` | none | Your own function, for any other SDK or service. It receives the messages by id (with their context), the locale, its plural categories and the prompt, and returns translations by id |
 
-Command-line flags override the config: `--locales es,bn`, `--dir`, `--source`, `--provider`, `--model`, `--keep-unused`, `--config <file>`, `--dry-run` (shows what `translate` would send, without calling the AI or writing files) and `--no-input` (never ask questions). Paths after the command replace `include`: `textlate translate app components`.
+Command-line flags override the config: `--locales es,bn`, `--dir`, `--source`, `--provider`, `--model`, `--keep-unused`, `--config <file>`, `--dry-run` (shows what `translate` would send, without calling the AI or writing files), `--no-input` (never ask questions) and `--no-color` (plain output). Paths after the command replace `include`: `textlate translate app components`.
 
 ### How translation works
 

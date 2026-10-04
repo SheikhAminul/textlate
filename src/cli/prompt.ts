@@ -33,6 +33,8 @@ type Input = NodeJS.ReadableStream & { isTTY?: boolean | undefined; setRawMode?:
 export interface PrompterStreams {
 	input?: Input
 	output?: NodeJS.WritableStream
+	/** Put in front of every line, so questions line up with the rest of the output. Default none. */
+	indent?: string
 }
 
 /** Whether questions can be asked: a terminal on both ends, and not a CI run. */
@@ -49,6 +51,7 @@ const END = ['\u0003', '\u0004']
 export const createPrompter = (streams: PrompterStreams = {}): Prompter => {
 	const input = streams.input ?? process.stdin
 	const output = streams.output ?? process.stdout
+	const indent = streams.indent ?? ''
 	// Only a terminal can hide what is typed; a pipe echoes nothing in the first place.
 	const keys = Boolean(input.isTTY && typeof input.setRawMode === 'function')
 
@@ -124,7 +127,7 @@ export const createPrompter = (streams: PrompterStreams = {}): Prompter => {
 	const line = (query: string, mask = false): Promise<string> => {
 		if (cancelled) return Promise.reject(new Cancelled())
 		attach()
-		output.write(query)
+		output.write(indent + query)
 		// A line typed ahead of its question was echoed as it was typed.
 		const ready = ahead.shift()
 		if (ready !== undefined) return Promise.resolve(ready)
@@ -136,8 +139,8 @@ export const createPrompter = (streams: PrompterStreams = {}): Prompter => {
 	return {
 		select: async (question, choices, fallback) => {
 			const preset = choices.find(choice => choice.value === fallback) ?? choices[0]!
-			const options = choices.map((choice, index) => `  ${index + 1}) ${choice.label}${choice.hint ? ` (${choice.hint})` : ''}${choice === preset ? '  [default]' : ''}`)
-			output.write(`${question}\n${options.join('\n')}\n`)
+			const options = choices.map((choice, index) => `${indent}  ${index + 1}) ${choice.label}${choice.hint ? ` (${choice.hint})` : ''}${choice === preset ? '  [default]' : ''}`)
+			output.write(`${indent}${question}\n${options.join('\n')}\n`)
 			for (;;) {
 				const answer = (await line('> ')).trim()
 				if (!answer) return preset.value
@@ -145,7 +148,7 @@ export const createPrompter = (streams: PrompterStreams = {}): Prompter => {
 				if (Number.isInteger(index) && index >= 1 && index <= choices.length) return choices[index - 1]!.value
 				const named = choices.find(choice => choice.label.toLowerCase().startsWith(answer.toLowerCase()) || String(choice.value).toLowerCase() === answer.toLowerCase())
 				if (named) return named.value
-				output.write(`  Answer with a number from 1 to ${choices.length}.\n`)
+				output.write(`${indent}  Answer with a number from 1 to ${choices.length}.\n`)
 			}
 		},
 		text: async (question, fallback = '') => {

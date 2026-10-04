@@ -5,11 +5,12 @@ import { pathToFileURL } from 'node:url'
 import { parseArgs } from 'node:util'
 import type { AIConfig, Config } from '../config.js'
 import type { Message } from '../types.js'
-import { createProvider, translateMessages, type Runtime } from './ai.js'
+import { createProvider, languageName, translateMessages, type Runtime } from './ai.js'
 import { checkTranslation, isTranslated, readLocaleFile, serialize, syncMessages, writeLocaleFile, type LocaleFile, type LocaleMessages } from './catalog.js'
 import { Cancelled, createPrompter, isInteractive, type Prompter } from './prompt.js'
 import { scanFiles } from './scan.js'
 import { missingAISettings, setupAI, setupHint } from './setup.js'
+import { createRenderer, createStatus, type Column, type Row, type Styler } from './ui.js'
 
 const CONFIG_FILES = ['ts', 'mts', 'js', 'mjs', 'json'].map(extension => `textlate.config.${extension}`)
 const LOCALE_FILE = /^([a-z]{2,3}(?:[-_][a-z\d]+)*)\.json$/i
@@ -36,6 +37,7 @@ Options:
       --keep-unused        Keep translations of text that is no longer in the code
       --dry-run            translate: list what would be translated, without calling the AI
       --no-input           Never ask questions: fail instead (for CI)
+      --no-color           Plain output, without colours (also NO_COLOR; NO_UNICODE for ASCII tables)
   -h, --help               Show this help
 
 API keys come from ANTHROPIC_API_KEY, OPENAI_API_KEY or GEMINI_API_KEY, also read from .env and .env.local.
@@ -59,6 +61,12 @@ export interface RunOptions {
 	env?: Readonly<Record<string, string | undefined>>
 	/** How setup asks its questions. Defaults to the terminal, or to nothing when there is none. */
 	prompt?: Prompter | undefined
+	/** Colour the output. Defaults to whether it goes to a terminal. */
+	color?: boolean | undefined
+	/** Draw tables with box-drawing characters. Defaults to whether the terminal can show them. */
+	unicode?: boolean | undefined
+	/** The width the output is laid out for. Defaults to the terminal's. */
+	columns?: number | undefined
 }
 
 /** The config from `path`, or from the first `textlate.config.*` in `cwd`, with the file it came from. */
@@ -98,6 +106,7 @@ const readEnv = (cwd: string): Record<string, string | undefined> => {
 const list = (value: string | undefined) => value?.split(',').map(item => item.trim()).filter(Boolean)
 const plural = (count: number, noun: string) => `${count} ${noun}${count === 1 ? '' : 's'}`
 const quote = (text: string) => JSON.stringify(text.length > 60 ? `${text.slice(0, 57)}...` : text)
+const sum = (values: readonly number[]) => values.reduce((total, value) => total + value, 0)
 
 /** Run up to `limit` jobs at a time. */
 const pool = async <T>(items: readonly T[], limit: number, work: (item: T) => Promise<void>) => {
@@ -128,6 +137,21 @@ const review = (sources: ReadonlyMap<string, Message>, state: LocaleState) => {
 	return { untranslated, problems }
 }
 
+/** Where one locale stands: what it has, what it misses and what is wrong with it. */
+interface Snapshot {
+	state: LocaleState
+	untranslated: Map<string, Message>
+	problems: string[]
+	/** The file on disk is not what extract would write: messages were added, removed or reordered. */
+	outdated: boolean
+}
+
+const snapshot = (sources: ReadonlyMap<string, Message>, state: LocaleState): Snapshot => ({
+	state,
+	...review(sources, state),
+	outdated: serialize(state.file, state.messages) !== state.file.raw
+})
+
 /**
  * Run the command line with `args` (without `node` and the script) and return the exit code.
  *
@@ -140,6 +164,9 @@ export const run = async (args: readonly string[], options: RunOptions = {}): Pr
 	const cwd = options.cwd ?? process.cwd()
 	const log = options.log ?? console.log
 	const error = options.error ?? console.error
+	const lines = (values: readonly string[]) => {
+		for (const line of values) log(line)
+	}
 
 	let parsed
 	try {
@@ -157,6 +184,7 @@ export const run = async (args: readonly string[], options: RunOptions = {}): Pr
 				'keep-unused': { type: 'boolean' },
 				'dry-run': { type: 'boolean' },
 				'no-input': { type: 'boolean' },
+				'no-color': { type: 'boolean' },
 				help: { type: 'boolean', short: 'h' }
 			}
 		})
@@ -175,8 +203,11 @@ export const run = async (args: readonly string[], options: RunOptions = {}): Pr
 		return 2
 	}
 
+	const ui = createRenderer({ color: values['no-color'] ? false : options.color, unicode: options.unicode, columns: options.columns })
+	const blank = () => log('')
+	const { dim, bold } = ui.theme
 	// Questions are only asked on a terminal, so a script or a CI run fails with an explanation instead of hanging.
-	const prompt = options.prompt ?? (values['no-input'] || !isInteractive() ? undefined : createPrompter())
+	const prompt = options.prompt ?? (values['no-input'] || !isInteractive() ? undefined : createPrompter({ indent: '  ' }))
 
 	try {
 		const { config, file: configFile } = await loadConfig(cwd, values.config)
@@ -185,8 +216,13 @@ export const run = async (args: readonly string[], options: RunOptions = {}): Pr
 
 		if (command === 'setup') {
 			if (!prompt) throw new UsageError('textlate setup asks questions, so it needs a terminal. Set ai.provider and ai.model in textlate.config.js instead.')
-			await setupAI({ cwd, ai, configFile, env, prompt, log })
-			log('Ready. Run "textlate translate" to translate your messages.')
+			blank()
+			log(ui.title('textlate setup'))
+			blank()
+			await setupAI({ cwd, ai, configFile, env, prompt, log: line => log(ui.line(line, 0)) })
+			blank()
+			log(ui.note('ok', 'Ready. Run "textlate translate" to translate your messages.'))
+			blank()
 			return 0
 		}
 
@@ -208,8 +244,7 @@ export const run = async (args: readonly string[], options: RunOptions = {}): Pr
 			}
 		}
 		const scan = scanFiles(include, cwd, list(values.functions) ?? config.functions)
-		log(`Found ${plural(scan.messages.size, 'message')} in ${plural(scan.files, 'file')}.`)
-		for (const warning of scan.warnings) log(`  ${warning.file}:${warning.line}  ${warning.message}`)
+		const total = scan.messages.size
 
 		const keepUnused = values['keep-unused'] ?? config.keepUnused
 		const states: LocaleState[] = locales.map(locale => {
@@ -217,54 +252,157 @@ export const run = async (args: readonly string[], options: RunOptions = {}): Pr
 			return { locale, file, ...syncMessages(scan.messages, file.messages, locale, keepUnused) }
 		})
 		const name = (state: LocaleState) => relative(cwd, state.file.path)
+		const snapshots = states.map(state => snapshot(scan.messages, state))
+
+		// What the run is about, before it does anything: the languages, the text found and where the files are.
+		blank()
+		log(ui.title(`textlate ${command}`))
+		blank()
+		lines(
+			ui.details([
+				['Source', sourceLocale, languageName(sourceLocale)],
+				['Locales', String(locales.length), locales.join(', ')],
+				['Messages', String(total), `in ${plural(scan.files, 'file')}`],
+				['Files', join(relative(cwd, dir) || '.', '<locale>.json')],
+				Boolean(configFile) && ['Config', relative(cwd, configFile!)]
+			])
+		)
+		if (scan.warnings.length) {
+			blank()
+			for (const warning of scan.warnings) log(ui.note('warn', `${warning.file}:${warning.line}  ${warning.message}`))
+		}
+
+		const COLUMNS: Column[] = [
+			{ title: 'Locale' },
+			{ title: 'Language', flex: true, droppable: true },
+			{ title: 'Translated', align: 'right' },
+			{ title: 'Missing', align: 'right' },
+			{ title: 'New', align: 'right', optional: true },
+			{ title: 'Unused', align: 'right', optional: true },
+			{ title: 'Invalid', align: 'right', optional: true }
+		]
+		// Zero is left blank: the table shows a dash, and a column that is zero everywhere is left out altogether.
+		const count = (value: number, sign = '', style: Styler = text => text) => (value ? style(`${sign}${value}`) : '')
+		const share = (done: number, all: number) => `${done}/${all}${all ? `  ${dim(`${Math.round((done / all) * 100)}%`)}` : ''}`
+		const cells = (locale: string, language: string, snaps: readonly Snapshot[]): string[] => {
+			const missing = sum(snaps.map(snap => snap.untranslated.size))
+			return [
+				locale,
+				language,
+				share(snaps.length * total - missing, snaps.length * total),
+				count(missing, '', ui.theme.yellow),
+				count(sum(snaps.map(snap => snap.state.added)), '+'),
+				count(sum(snaps.map(snap => snap.state.removed)), '-'),
+				count(sum(snaps.map(snap => snap.problems.length)), '', ui.theme.red)
+			]
+		}
+		/** The table under `heading`: one row per locale, and a total row when there is more than one. */
+		const catalogs = (snaps: readonly Snapshot[], heading: string) => {
+			const rows: Row[] = snaps.map(snap => ({ cells: cells(ui.theme.cyan(snap.state.locale), languageName(snap.state.locale), [snap]) }))
+			if (snaps.length > 1) rows.push({ rule: true, cells: cells(bold('Total'), dim(plural(snaps.length, 'locale')), snaps) })
+			blank()
+			log(ui.heading(heading))
+			blank()
+			lines(ui.table(COLUMNS, rows))
+			blank()
+		}
+		catalogs(snapshots, 'Catalogs')
 
 		if (command === 'check') {
-			let failed = false
-			for (const state of states) {
-				const { untranslated, problems } = review(scan.messages, state)
-				const issues = [
-					serialize(state.file, state.messages) !== state.file.raw && 'out of date (run textlate extract)',
-					untranslated.size > 0 && `${untranslated.size} untranslated (run textlate translate)`,
-					problems.length > 0 && plural(problems.length, 'invalid translation')
-				].filter(Boolean)
-				failed ||= issues.length > 0
-				log(`  ${name(state)}: ${issues.length ? issues.join(', ') : 'ok'}`)
-				for (const problem of problems) log(`    ${problem}`)
+			let failed = 0
+			for (const snap of snapshots) {
+				const reasons = [
+					snap.outdated && 'out of date (run textlate extract)',
+					snap.untranslated.size > 0 && `${snap.untranslated.size} untranslated (run textlate translate)`,
+					snap.problems.length > 0 && plural(snap.problems.length, 'invalid translation')
+				].filter((reason): reason is string => Boolean(reason))
+				if (reasons.length) failed++
+				log(ui.note(reasons.length ? 'fail' : 'ok', `${name(snap.state)}  ${reasons.length ? reasons.join(` ${ui.glyphs.dot} `) : dim('up to date')}`))
+				for (const problem of snap.problems) log(ui.line(problem, 2))
 			}
+			blank()
+			log(
+				failed
+					? ui.note('fail', `${failed} of ${plural(snapshots.length, 'locale')} ${failed === 1 ? 'needs' : 'need'} attention.`)
+					: ui.note('ok', `${plural(snapshots.length, 'locale')} up to date, ${plural(total * snapshots.length, 'translation')} in place.`)
+			)
+			blank()
 			return failed ? 1 : 0
 		}
 
-		const pending = states.map(state => ({ state, messages: review(scan.messages, state).untranslated })).filter(({ messages }) => messages.size)
+		const pending = snapshots.filter(snap => snap.untranslated.size > 0)
+		const outstanding = sum(pending.map(snap => snap.untranslated.size))
+
 		if (command === 'translate' && values['dry-run']) {
-			for (const { state, messages } of pending) log(`  ${name(state)}: would translate ${plural(messages.size, 'message')}`)
-			if (!pending.length) log('  Everything is translated.')
+			log(
+				pending.length
+					? ui.note('info', `Dry run: would translate ${plural(outstanding, 'message')} in ${plural(pending.length, 'locale')}${ai.model ? ` with ${bold(ai.model)}` : ''}. Nothing was written.`)
+					: ui.note('ok', 'Everything is translated. Nothing to do.')
+			)
+			blank()
 			return 0
 		}
 
-		for (const state of states) writeLocaleFile(state.file, state.messages)
+		const written = states.filter(state => writeLocaleFile(state.file, state.messages)).length
 		const failures = new Map<string, string[]>()
 
-		if (command === 'translate') {
-			const missing = pending.length ? missingAISettings(ai, env) : []
+		/** What is wrong with each locale, under the file it is wrong in. */
+		const issues = (snaps: readonly Snapshot[]) => {
+			let listed = false
+			for (const snap of snaps) {
+				const found = [...snap.problems, ...(failures.get(snap.state.locale) ?? [])]
+				if (!found.length) continue
+				listed = true
+				log(ui.note('fail', name(snap.state)))
+				for (const issue of found) log(ui.line(issue, 2))
+			}
+			if (listed) blank()
+		}
+
+		if (command === 'extract') {
+			issues(snapshots)
+			log(written ? ui.note('ok', `Updated ${plural(written, 'file')} in ${relative(cwd, dir) || '.'}.`) : ui.note('ok', 'Every file is already up to date.'))
+			if (outstanding) log(ui.note('info', `${plural(outstanding, 'message')} left to translate. Run "textlate translate".`))
+			blank()
+			return 0
+		}
+
+		if (pending.length) {
+			const missing = missingAISettings(ai, env)
 			if (missing.length) {
 				if (!prompt) throw new UsageError(setupHint(cwd, ai, missing))
-				log(`No ${missing.join(' or ')} to translate with yet. Setting that up once:`)
-				ai = await setupAI({ cwd, ai, configFile, env, prompt, log })
+				log(ui.note('info', `No ${missing.join(' or ')} to translate with yet. Setting that up once:`))
+				blank()
+				ai = await setupAI({ cwd, ai, configFile, env, prompt, log: line => log(ui.line(line, 0)) })
+				blank()
 			}
 			const runtime: Runtime = {
 				fetch: options.fetch ?? globalThis.fetch,
 				sleep: options.sleep ?? (ms => new Promise(done => setTimeout(done, ms))),
 				env
 			}
-			const provider = pending.length ? createProvider(ai, runtime) : undefined
-			await pool(pending, ai.concurrency ?? 4, async ({ state, messages }) => {
+			const provider = createProvider(ai, runtime)
+
+			log(ui.note('info', `Translating ${plural(outstanding, 'message')} into ${plural(pending.length, 'locale')}${ai.model ? ` with ${bold(ai.model)}` : ''}…`))
+			// On a terminal one line keeps track of every locale at once; elsewhere each batch logs a line of its own.
+			const live = !options.log && Boolean(process.stdout.isTTY)
+			const status = createStatus({ log, interactive: live })
+			const progress = new Map(pending.map(snap => [snap.state.locale, { done: 0, size: snap.untranslated.size }]))
+			const show = (locale: string, done: number, size: number) => {
+				progress.set(locale, { done, size })
+				const finished = sum([...progress.values()].map(({ done: count }) => count))
+				const each = progress.size > 1 ? `  ${dim([...progress].map(([code, { done: count, size: all }]) => `${code} ${count}/${all}`).join(` ${ui.glyphs.dot} `))}` : ''
+				status.set(live ? ui.line(`${ui.bar(finished / outstanding)}  ${finished}/${outstanding}${each}`, 0) : ui.line(`${locale}  ${done}/${size} translated`, 1))
+			}
+
+			await pool(pending, ai.concurrency ?? 4, async ({ state, untranslated }) => {
 				let done = 0
 				try {
 					const outcome = await translateMessages({
-						provider: provider!,
+						provider,
 						sourceLocale,
 						locale: state.locale,
-						messages,
+						messages: untranslated,
 						instructions: ai.instructions,
 						batchSize: ai.batchSize,
 						onTranslated: translations => {
@@ -272,7 +410,7 @@ export const run = async (args: readonly string[], options: RunOptions = {}): Pr
 							state.messages = { ...state.messages, ...translations }
 							writeLocaleFile(state.file, state.messages)
 							done += Object.keys(translations).length
-							log(`  ${state.locale}: translated ${done}/${messages.size}`)
+							show(state.locale, done, untranslated.size)
 						}
 					})
 					if (outcome.failed.length) failures.set(state.locale, outcome.failed.map(({ text, reason }) => `${quote(text)}: ${reason}`))
@@ -280,23 +418,26 @@ export const run = async (args: readonly string[], options: RunOptions = {}): Pr
 					failures.set(state.locale, [(cause as Error).message])
 				}
 			})
+			status.end()
 		}
 
-		for (const state of states) {
-			const { untranslated, problems } = review(scan.messages, state)
-			const changes = [state.added && `+${state.added}`, state.removed && `-${state.removed}`].filter(Boolean).join(' ')
-			const translated = scan.messages.size - untranslated.size
-			log(`  ${name(state)}: ${translated}/${scan.messages.size} translated${changes ? ` (${changes})` : ''}`)
-			for (const problem of problems) log(`    ${problem}`)
-			for (const failure of failures.get(state.locale) ?? []) error(`    ${failure}`)
-		}
+		const after = states.map(state => snapshot(scan.messages, state))
+		const left = sum(after.map(snap => snap.untranslated.size))
+		if (pending.length) catalogs(after, 'After translating')
+		issues(after)
+		log(
+			left
+				? ui.note(failures.size ? 'fail' : 'warn', `${plural(outstanding - left, 'message')} translated, ${plural(left, 'message')} still missing.${failures.size ? ' Run "textlate translate" again to retry.' : ''}`)
+				: ui.note('ok', outstanding ? `Translated ${plural(outstanding, 'message')}. Every locale is complete.` : 'Everything is already translated.')
+		)
+		blank()
 		return failures.size ? 1 : 0
 	} catch (cause) {
 		if (cause instanceof Cancelled) {
-			error('[textlate] Cancelled.')
+			error(ui.note('warn', 'Cancelled.'))
 			return 130
 		}
-		error(`[textlate] ${(cause as Error).message}`)
+		error(ui.note('fail', (cause as Error).message))
 		return cause instanceof UsageError ? 2 : 1
 	} finally {
 		if (!options.prompt) prompt?.close()

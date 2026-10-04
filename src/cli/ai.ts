@@ -22,7 +22,8 @@ export class ApiError extends Error {}
 /** The answer was cut off at the output limit: the batch is split and sent again. */
 class Truncated extends Error {}
 
-const languageName = (locale: string) => {
+/** The English name of a language, e.g. `'Spanish'` for `'es'`, or the locale itself when it has no name. */
+export const languageName = (locale: string): string => {
 	try {
 		return new Intl.DisplayNames(['en'], { type: 'language' }).of(locale) ?? locale
 	} catch {

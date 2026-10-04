@@ -11,6 +11,7 @@ import { Cancelled, createPrompter, type Prompter } from '../src/cli/prompt.js'
 import { run } from '../src/cli/run.js'
 import { scanCode } from '../src/cli/scan.js'
 import { missingAISettings } from '../src/cli/setup.js'
+import { createRenderer, createStatus, createTheme, detectColor, detectUnicode, stripStyles, truncate, width } from '../src/cli/ui.js'
 import type { TranslateRequest } from '../src/config.js'
 import type { Message } from '../src/types.js'
 
@@ -394,9 +395,17 @@ describe('run', () => {
 	const read = (path: string) => JSON.parse(readFileSync(join(cwd, path), 'utf8')) as Record<string, unknown>
 	const cli = async (args: string[], options: Partial<Runtime> & { prompt?: Prompter } = {}) => {
 		const output: string[] = []
-		const code = await run(args, { cwd, log: line => output.push(line), error: line => output.push(line), ...options })
+		const code = await run(args, { cwd, color: false, unicode: true, log: line => output.push(line), error: line => output.push(line), ...options })
 		return { code, output: output.join('\n') }
 	}
+	/** The cells of the table row that starts with `label`, whitespace squeezed. */
+	const row = (output: string, label: string) =>
+		output
+			.split('\n')
+			.find(line => line.trimStart().startsWith(`│ ${label} `))
+			?.split('│')
+			.slice(1, -1)
+			.map(cell => cell.trim().replace(/\s+/g, ' '))
 
 	beforeEach(() => {
 		cwd = mkdtempSync(join(tmpdir(), 'textlate-'))
@@ -420,9 +429,33 @@ describe('run', () => {
 			'{count} files': { one: '', many: '', other: '' }
 		})
 		expect(read('src/locales/ja.json')['{count} files']).toEqual({ other: '' })
-		expect(output).toContain('Found 3 messages in 1 file.')
+		expect(output).toMatch(/Messages\s+3\s+in 1 file/)
 		expect(output).toContain('src/app.tsx:4  translate(…)')
-		expect(output).toContain(`${join('src', 'locales', 'es.json')}: 0/3 translated (+3)`)
+		expect(row(output, 'es')).toEqual(['es', 'Spanish', '0/3 0%', '3', '+3'])
+		expect(row(output, 'Total')).toEqual(['Total', '2 locales', '0/6 0%', '6', '+6'])
+		expect(output).toContain(`Updated 2 files in ${join('src', 'locales')}.`)
+	})
+
+	it('counts the locales, the messages, the translations and what is missing before it translates', async () => {
+		write('src/locales/es.json', JSON.stringify({ 'I am fine.': 'Estoy bien.', Old: 'Viejo' }))
+		const { code, output } = await cli(['translate', '--dry-run', '-l', 'es,ja'], { env: {} })
+		expect(code).toBe(0)
+		expect(output).toMatch(/Source\s+en\s+English/)
+		expect(output).toMatch(/Locales\s+2\s+es, ja/)
+		expect(output).toMatch(/Messages\s+3\s+in 1 file/)
+		expect(output).toMatch(/Files\s+src.locales.<locale>\.json/)
+		expect(row(output, 'Locale')).toEqual(['Locale', 'Language', 'Translated', 'Missing', 'New', 'Unused'])
+		expect(row(output, 'es')).toEqual(['es', 'Spanish', '1/3 33%', '2', '+2', '-1'])
+		expect(row(output, 'ja')).toEqual(['ja', 'Japanese', '0/3 0%', '3', '+3', '–'])
+		expect(row(output, 'Total')).toEqual(['Total', '2 locales', '1/6 17%', '5', '+5', '-1'])
+		expect(output).toContain('would translate 5 messages in 2 locales')
+	})
+
+	it('counts the invalid translations it found', async () => {
+		write('src/locales/es.json', JSON.stringify({ 'Welcome, {firstName}!': '¡Bienvenido!', 'I am fine.': 'Estoy bien.', '{count} files': { one: 'a', many: 'b', other: 'c' } }))
+		const { output } = await cli(['check', '-l', 'es'])
+		expect(row(output, 'Locale')).toEqual(['Locale', 'Language', 'Translated', 'Missing', 'Invalid'])
+		expect(row(output, 'es')).toEqual(['es', 'Spanish', '3/3 100%', '–', '1'])
 	})
 
 	it('translates only what is untranslated, and keeps existing translations', async () => {
@@ -470,7 +503,7 @@ describe('run', () => {
 	})
 
 	it('scans absolute paths, and explains a path that does not exist', async () => {
-		expect((await cli(['extract', join(cwd, 'src'), '-l', 'es'])).output).toContain('Found 3 messages in 1 file.')
+		expect((await cli(['extract', join(cwd, 'src'), '-l', 'es'])).output).toMatch(/Messages\s+3\s+in 1 file/)
 		const missing = await cli(['extract', 'app', '-l', 'es'])
 		expect(missing.code).toBe(2)
 		expect(missing.output).toContain('Nothing to scan at "app"')
@@ -495,7 +528,8 @@ describe('run', () => {
 		write('src/locales/es.json', JSON.stringify({ 'Welcome, {firstName}!': '¡Bienvenido, {firstName}!', 'I am fine.': 'Estoy bien.', '{count} files': { one: '{count} archivo', many: '{count} de archivos', other: '{count} archivos' } }, null, 2) + '\n')
 		const ok = await cli(['check'])
 		expect(ok.code).toBe(0)
-		expect(ok.output).toContain('es.json: ok')
+		expect(ok.output).toContain(`${join('src', 'locales', 'es.json')}  up to date`)
+		expect(ok.output).toContain('1 locale up to date, 3 translations in place.')
 	})
 
 	it('explains usage errors', async () => {
@@ -769,5 +803,78 @@ describe('createPrompter', () => {
 		expect(await prompt.secret('ANTHROPIC_API_KEY')).toBe('sk-piped')
 		prompt.close()
 		expect(shown()).not.toContain('sk-piped')
+	})
+})
+
+describe('ui', () => {
+	const ui = createRenderer({ color: false, unicode: true, columns: 40 })
+
+	it('measures and shortens text, colours and wide characters aside', () => {
+		const red = createTheme(true).red('red')
+		expect(stripStyles(red)).toBe('red')
+		expect(width(red)).toBe(3)
+		expect(width('日本語')).toBe(6)
+		expect(truncate(red, 5)).toBe(red)
+		expect(truncate('src/locales/es-419.json', 12)).toBe('src/lo….json')
+		expect(truncate('日本語です', 4)).toBe('日…')
+	})
+
+	it('lines up labelled values, ignoring the ones without a note', () => {
+		expect(ui.details([['Locales', '2', 'es, ja'], ['Messages', '12', 'in 3 files'], ['Catalogs', 'src/locales'], false])).toEqual([
+			'  Locales   2   es, ja',
+			'  Messages  12  in 3 files',
+			'  Catalogs  src/locales'
+		])
+	})
+
+	it('draws a table, leaves out empty optional columns and marks empty cells', () => {
+		const lines = ui.table(
+			[{ title: 'Locale' }, { title: 'Missing', align: 'right' }, { title: 'Invalid', align: 'right', optional: true }],
+			[{ cells: ['es', '2', ''] }, { cells: ['ja', '', ''] }, { rule: true, cells: ['Total', '2', ''] }]
+		)
+		expect(lines).toEqual([
+			'  ╭────────┬─────────╮',
+			'  │ Locale │ Missing │',
+			'  ├────────┼─────────┤',
+			'  │ es     │       2 │',
+			'  │ ja     │       – │',
+			'  ├────────┼─────────┤',
+			'  │ Total  │       2 │',
+			'  ╰────────┴─────────╯'
+		])
+	})
+
+	it('keeps a table inside the terminal by shortening its flexible column', () => {
+		const narrow = createRenderer({ color: false, unicode: true, columns: 40 })
+		const lines = narrow.table([{ title: 'File', flex: true }, { title: 'Translated', align: 'right' }], [{ cells: ['src/locales/zh-Hant-TW.json', '12/12'] }])
+		expect(lines.every(line => width(line) <= 40)).toBe(true)
+		expect(lines[3]).toContain('…')
+	})
+
+	it('falls back to ASCII and to no colour when the terminal asks for it', () => {
+		const plain = createRenderer({ color: false, unicode: false, columns: 40 })
+		expect(plain.table([{ title: 'Locale' }], [{ cells: ['es'] }])[0]).toBe('  +--------+')
+		expect(detectColor({ NO_COLOR: '1' }, { isTTY: true })).toBe(false)
+		expect(detectColor({ FORCE_COLOR: '1' }, { isTTY: false })).toBe(true)
+		expect(detectColor({}, { isTTY: true })).toBe(true)
+		expect(detectColor({ TERM: 'dumb' }, { isTTY: true })).toBe(false)
+		expect(detectUnicode({ NO_UNICODE: '1' })).toBe(false)
+	})
+
+	it('rewrites one status line on a terminal, and logs every step without one', () => {
+		const written: string[] = []
+		const stream = { isTTY: true, columns: 20, write: (text: string) => written.push(text) } as unknown as NodeJS.WriteStream
+		const logged: string[] = []
+		const live = createStatus({ stream, log: line => logged.push(line), interactive: true })
+		live.set('4/10')
+		live.set('8/10')
+		live.end('done')
+		expect(written).toEqual(['4/10', '\r\u001B[2K', '8/10', '\r\u001B[2K'])
+		expect(logged).toEqual(['done'])
+
+		const quiet = createStatus({ stream, log: line => logged.push(line), interactive: false })
+		quiet.set('4/10')
+		quiet.end()
+		expect(logged).toEqual(['done', '4/10'])
 	})
 })
