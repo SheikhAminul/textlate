@@ -123,10 +123,12 @@ interface Shared {
 	readonly warned: Set<string>
 	/** Messages objects already added, so a provider re-rendering with the same ones adds nothing. */
 	readonly added: WeakSet<object>
-	/** Instances with subscribers, re-rendered when translations change. */
-	readonly subscribed: Set<() => void>
-	/** Bumped whenever translations change, invalidating the scopes' memos. */
+	/** Instances with subscribers, re-rendered when translations of a locale they show change. */
+	readonly subscribed: Set<(locale: string) => void>
+	/** Bumped whenever translations change, so a scope checks what changed only after something did. */
 	version: number
+	/** The `version` each locale's translations last changed at: a scope's memo resets only for its own fallback chain. */
+	readonly versions: Map<string, number>
 	/** Messages resolved since the memos last moved on a generation, across every scope. */
 	memoSize: number
 	/** Each scope's way of moving its memo on a generation, by the scope's key. */
@@ -241,10 +243,10 @@ const setTranslations = (shared: Shared, locale: string, namespace: string, tran
 	// The server may send a page's messages a part at a time (a layout's, then a page's): parts add up.
 	store.namespaces.set(namespace, mode === 'add' && existing ? { ...existing, ...translations } : translations)
 	store.used = ++shared.clock
-	shared.version++
+	shared.versions.set(locale, ++shared.version)
 	// Translations added while rendering (as I18nProvider does with the server's) must not notify, or other components
 	// would update mid-render.
-	if (mode === 'load') for (const refresh of [...shared.subscribed]) refresh()
+	if (mode === 'load') for (const refresh of [...shared.subscribed]) refresh(locale)
 	evict(shared, locale)
 }
 
@@ -335,7 +337,15 @@ const createScope = (shared: Shared, locale: string, timeZone: string | undefine
 	const createMemo = (): Memo => ({ texts: new Map(), objects: new Map() })
 	let current = createMemo()
 	let previous = createMemo()
+	// Translations changing in a locale outside this scope's fallback chain leave its memo as it is.
+	const chain = chainOf(shared, locale)
+	const changedAt = () => {
+		let last = 0
+		for (const entry of chain) last = Math.max(last, shared.versions.get(entry) ?? 0)
+		return last
+	}
 	let version = shared.version
+	let changed = changedAt()
 	const limit = config.memoLimit ?? MEMO_LIMIT
 	const slot = (memo: Memo, message: Message): Map<string, Entry> => {
 		if (typeof message === 'string') return memo.texts
@@ -357,9 +367,13 @@ const createScope = (shared: Shared, locale: string, timeZone: string | undefine
 	}
 	const resolve = (message: Message): Entry => {
 		if (version !== shared.version) {
-			current = createMemo()
-			previous = createMemo()
 			version = shared.version
+			const last = changedAt()
+			if (last !== changed) {
+				changed = last
+				current = createMemo()
+				previous = createMemo()
+			}
 		}
 		const text = typeof message === 'string' ? message : (message.text ?? message.other!)
 		const memo = slot(current, message)
@@ -422,8 +436,10 @@ const createInstance = (shared: Shared, requested: string | undefined, timeZone:
 	const update = (next: I18nSnapshot) => {
 		if (next.locale !== snapshot.locale || next.pendingLocale !== snapshot.pendingLocale) notify(next)
 	}
-	// Same state, new snapshot: subscribers re-render with the changed translations.
-	const refresh = () => notify({ ...snapshot })
+	// Same state, new snapshot: subscribers re-render with the changed translations — only of a locale they show.
+	const refresh = (locale: string) => {
+		if (chainOf(shared, snapshot.locale).includes(locale)) notify({ ...snapshot })
+	}
 	// Only explicit choices are persisted. Saving a detected locale would pin it, e.g. ignore a later browser language change.
 	const commit = (locale: string, persist?: boolean) => {
 		update({ locale, pendingLocale: undefined })
@@ -618,6 +634,7 @@ export const createI18n = <const Locales extends Record<string, TranslationSourc
 		added: new WeakSet(),
 		subscribed: new Set(),
 		version: 0,
+		versions: new Map(),
 		memoSize: 0,
 		rotations: new Map(),
 		clock: 0

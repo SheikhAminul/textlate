@@ -412,9 +412,10 @@ describe('instances', () => {
 		expect(i18n.scope('bn').translate('Plain text')).toBe('added')
 	})
 
-	it('notifies subscribers when translations finish loading, never when they are added while rendering', async () => {
+	it('notifies subscribers when translations of their locale finish loading, never when they are added while rendering', async () => {
 		const i18n = createTestI18n()
-		const clone = i18n.clone()
+		// bn-BD falls back to bn: bn's translations are on its screen too.
+		const clone = i18n.clone({ locale: 'bn-BD' })
 		const listener = vi.fn()
 		const cloneListener = vi.fn()
 		const unsubscribe = i18n.subscribe(listener)
@@ -423,17 +424,37 @@ describe('instances', () => {
 		i18n.addMessages({ ar: { default: { 'Plain text': 'added' } } })
 		expect(listener).not.toHaveBeenCalled()
 
-		const before = i18n.getSnapshot()
+		// English is on screen: bn loading changes nothing it shows.
 		await i18n.load('bn')
-		expect(listener).toHaveBeenCalledOnce()
-		expect(cloneListener).toHaveBeenCalledOnce()
-		expect(i18n.getSnapshot()).not.toBe(before)
-		expect(i18n.getSnapshot()).toEqual(before)
+		expect(listener).not.toHaveBeenCalled()
+		expect(cloneListener).toHaveBeenCalled()
 
+		const before = clone.getSnapshot()
+		cloneListener.mockClear()
+		await i18n.load('bn-BD', { namespaces: ['extra'] })
+		expect(cloneListener).toHaveBeenCalled()
+		expect(clone.getSnapshot()).not.toBe(before)
+		expect(clone.getSnapshot()).toEqual(before)
+
+		const calls = cloneListener.mock.calls.length
 		unsubscribe()
 		unsubscribeClone()
-		await i18n.load('bn-BD')
-		expect(listener).toHaveBeenCalledOnce()
+		await i18n.load('bn-BD', { namespaces: ['more'] })
+		expect(cloneListener).toHaveBeenCalledTimes(calls)
+		expect(listener).not.toHaveBeenCalled()
+	})
+
+	it('keeps the memos of locales whose translations did not change', async () => {
+		const onUntranslated = vi.fn()
+		const i18n = createTestI18n({ onUntranslated })
+		const { translate } = i18n.scope('ar')
+		translate('Not in ar')
+		await i18n.load('bn')
+		translate('Not in ar')
+		expect(onUntranslated).toHaveBeenCalledOnce()
+		// A change in its own chain still reaches it.
+		i18n.addMessages({ ar: { default: { 'Not in ar': 'ليس' } } })
+		expect(translate('Not in ar')).toBe('ليس')
 	})
 
 	it('never serves stale lookups after translations change', async () => {
