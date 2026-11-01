@@ -1,11 +1,13 @@
 'use client'
 
-import { createContext, use, useLayoutEffect, useMemo, useSyncExternalStore, type ReactNode } from 'react'
+import { createContext, use, useEffect, useLayoutEffect, useMemo, useState, useSyncExternalStore, type ComponentProps, type ReactNode } from 'react'
 import type { RegisteredI18n, RegisteredLocale } from './index.js'
 import type { I18n, Messages, Translations } from './types.js'
 
 const I18nContext = createContext<I18n | null>(null)
 I18nContext.displayName = 'I18nContext'
+/** The server's time when it rendered, so relative times render the same in the browser. */
+const NowContext = createContext<number | undefined>(undefined)
 
 // `use()` needs the same promise on every render while it waits, so each pending load is kept until it settles.
 const pending = new WeakMap<I18n, Map<string, Promise<unknown>>>()
@@ -42,6 +44,8 @@ export interface I18nProviderProps {
 	translations?: { readonly [L in RegisteredLocale]?: Translations } | undefined
 	/** Namespaces this subtree needs besides the default ones. It suspends until they're loaded. */
 	namespaces?: readonly string[] | undefined
+	/** The server's time when it rendered (e.g. `Date.now()` in the layout), so `<Time relative>` renders the same text in the browser. */
+	now?: Date | number | undefined
 	/** Run the instance's detectors after mount. Ignored when `locale` is set. Default `true`. */
 	detect?: boolean | undefined
 	/** Keep `<html lang dir>` in sync with the active locale. Default `true`. */
@@ -65,7 +69,7 @@ export interface I18nProviderProps {
  * <I18nProvider i18n={i18n} locale={lang} messages={messages}>{children}</I18nProvider>
  * ```
  */
-export const I18nProvider = ({ i18n, locale, timeZone, messages, translations, namespaces, detect = true, syncDocument = true, children }: I18nProviderProps) => {
+export const I18nProvider = ({ i18n, locale, timeZone, messages, translations, namespaces, now, detect = true, syncDocument = true, children }: I18nProviderProps) => {
 	if (messages) i18n.addMessages(messages)
 	if (translations) {
 		for (const [key, value] of Object.entries(translations)) {
@@ -89,7 +93,11 @@ export const I18nProvider = ({ i18n, locale, timeZone, messages, translations, n
 		document.documentElement.dir = instance.scope(active).dir
 	}, [instance, active, syncDocument])
 
-	return <I18nContext value={instance}>{children}</I18nContext>
+	return (
+		<I18nContext value={instance}>
+			{now === undefined ? children : <NowContext value={typeof now === 'number' ? now : now.getTime()}>{children}</NowContext>}
+		</I18nContext>
+	)
 }
 
 const useInstance = () => {
@@ -159,4 +167,41 @@ export const useI18n = () => {
 			i18n: instance
 		}
 	}, [instance, snapshot])
+}
+
+export interface TimeProps extends Omit<ComponentProps<'time'>, 'children' | 'dateTime'> {
+	value: Date | number | string
+	/** How to write the date and time, e.g. `{ dateStyle: 'medium', timeStyle: 'short' }`. */
+	format?: Intl.DateTimeFormatOptions | undefined
+	/** Write how long ago (or ahead) it is — "5 minutes ago" — kept up to date every minute once it's in the browser. */
+	relative?: boolean | undefined
+}
+
+/**
+ * A date or time, in the active locale and time zone, that hydrates without mismatches: the browser keeps the text the
+ * server rendered (engines can write the same date a little differently), and a relative time starts from the server's
+ * `now` (see `<I18nProvider now>`), then keeps itself current.
+ *
+ * @example
+ * ```tsx
+ * <Time value={run.startedAt} format={{ dateStyle: 'medium', timeStyle: 'short' }} />
+ * <Time value={run.startedAt} relative />
+ * ```
+ */
+export const Time = ({ value, format, relative, ...props }: TimeProps) => {
+	const { format: formatter } = useI18n()
+	const rendered = use(NowContext)
+	const [now, setNow] = useState(rendered)
+	useEffect(() => {
+		if (!relative) return
+		setNow(Date.now())
+		const timer = setInterval(() => setNow(Date.now()), 60_000)
+		return () => clearInterval(timer)
+	}, [relative])
+	const time = value instanceof Date ? value : new Date(value)
+	return (
+		<time {...props} dateTime={time.toISOString()} suppressHydrationWarning>
+			{relative ? formatter.relative(time, { now: now ?? Date.now() }) : formatter.date(time, format)}
+		</time>
+	)
 }

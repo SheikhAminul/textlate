@@ -2,6 +2,7 @@ import type { Metadata } from 'next'
 import { notFound } from 'next/navigation'
 import type { ReactNode } from 'react'
 import { i18n } from '@/i18n'
+import { seo } from '@/i18n/seo'
 import { Providers } from './providers'
 
 type Props = { children: ReactNode; params: Promise<{ lang: string }> }
@@ -10,8 +11,10 @@ export const generateStaticParams = () => i18n.locales.map(lang => ({ lang }))
 export const dynamicParams = false
 
 export const generateMetadata = async ({ params }: Omit<Props, 'children'>): Promise<Metadata> => {
-	const { translate } = await i18n.load((await params).lang)
-	return { title: translate('textlate + Next.js') }
+	const { lang } = await params
+	const { translate } = await i18n.load(lang)
+	// Canonical and hreflang links (with x-default), Open Graph locales, and noindex where too little is translated.
+	return { ...seo.metadata(i18n.match(lang) ?? i18n.sourceLocale, '/'), title: translate('textlate + Next.js') }
 }
 
 const RootLayout = async ({ children, params }: Props) => {

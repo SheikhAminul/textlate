@@ -1,17 +1,34 @@
 const normalize = (locale: string) => locale.trim().replace(/_/g, '-').toLowerCase()
 
+/**
+ * Language codes that were renamed, as older browsers, Android and Java still send them: Hebrew was `iw`, Indonesian
+ * `in`, Yiddish `ji`, Javanese `jw`, Moldovan Romanian `mo`, Norwegian `no` (Bokmål, `nb`, in practice), Tagalog `tl`
+ * (Filipino, `fil`) and Serbo-Croatian `sh` (Serbian in Latin script).
+ */
+const ALIASES: Readonly<Record<string, string>> = { iw: 'he', in: 'id', ji: 'yi', jw: 'jv', mo: 'ro', no: 'nb', tl: 'fil', sh: 'sr-latn' }
+
+/** A locale normalized, with a renamed language code replaced by today's: `iw-IL` → `he-il`. */
+const canonical = (locale: string) => {
+	const normalized = normalize(locale)
+	const dash = normalized.indexOf('-')
+	const language = dash < 0 ? normalized : normalized.slice(0, dash)
+	const alias = ALIASES[language]
+	return alias ? alias + (dash < 0 ? '' : normalized.slice(dash)) : normalized
+}
+
 // Normalized once per list of available locales, not on every match (e.g. once per server request).
 const normalizedLists = new WeakMap<readonly string[], readonly string[]>()
 const normalizeAll = (locales: readonly string[]) => {
 	let normalized = normalizedLists.get(locales)
-	if (!normalized) normalizedLists.set(locales, (normalized = locales.map(normalize)))
+	if (!normalized) normalizedLists.set(locales, (normalized = locales.map(canonical)))
 	return normalized
 }
 
 /**
  * Best match for `requested` among `available`, following the BCP 47 lookup algorithm.
  * Each preference is tried in order: exact match, then dropping subtags (`zh-Hant-TW` → `zh-Hant` → `zh`),
- * then any available locale with the same language (`en` → `en-US`).
+ * then any available locale with the same language (`en` → `en-US`). Renamed language codes match today's, both ways
+ * (`iw` and `he`, `no` and `nb`).
  *
  * @example
  * ```ts
@@ -31,7 +48,7 @@ export const matchLocale = <L extends string>(
 
 	for (const preference of preferences) {
 		if (!preference) continue
-		const parts = normalize(preference).split('-')
+		const parts = canonical(preference).split('-')
 		for (let length = parts.length; length > 0; length--) {
 			const index = normalized.indexOf(parts.slice(0, length).join('-'))
 			if (index !== -1) return available[index]

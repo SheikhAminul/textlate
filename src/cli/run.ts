@@ -5,6 +5,8 @@ import { pathToFileURL } from 'node:url'
 import { parseArgs } from 'node:util'
 import type { AIConfig, Config } from '../config.js'
 import { createProvider, languageName, limiter, translateMessages, type Runtime } from './ai.js'
+import { compiledOutdated, metaFileOf, openScanCache, routesFileOf, routesOutdated, writeCompiled, writeMeta, writeRoutes } from './artifacts.js'
+import { loadTypeScript } from './ast.js'
 import { checkTranslation } from './catalog.js'
 import {
 	acceptRun,
@@ -34,6 +36,7 @@ Commands:
   translate  Extract, then translate with AI what isn't translated yet, or changed since it was
   check      Fail if a translation file is out of date, untranslated, changed, invalid or unreviewed (for CI)
   accept     Mark the AI translations of the locales as reviewed by a person
+  compile    Write the compiled catalogs and the routes' message lists, from the files as they are (for builds)
   setup      Choose the AI provider, model and API key, and save them
 
 Arguments:
@@ -172,7 +175,7 @@ export const run = async (args: readonly string[], options: RunOptions = {}): Pr
 		log(HELP)
 		return 0
 	}
-	if (command !== 'extract' && command !== 'translate' && command !== 'check' && command !== 'accept' && command !== 'setup') {
+	if (command !== 'extract' && command !== 'translate' && command !== 'check' && command !== 'accept' && command !== 'compile' && command !== 'setup') {
 		error(`${command ? `Unknown command "${command}".` : 'Missing command.'}\n\n${HELP}`)
 		return 2
 	}
@@ -182,6 +185,7 @@ export const run = async (args: readonly string[], options: RunOptions = {}): Pr
 	const { dim, bold } = ui.theme
 	// Questions are only asked on a terminal, so a script or a CI run fails with an explanation instead of hanging.
 	const prompt = options.prompt ?? (values['no-input'] || !isInteractive() ? undefined : createPrompter({ indent: '  ' }))
+	let saveCache = () => {}
 
 	try {
 		const { config, file: configFile } = await loadConfig(cwd, values.config)
@@ -210,8 +214,20 @@ export const run = async (args: readonly string[], options: RunOptions = {}): Pr
 			keepUnused: values['keep-unused'],
 			reviewed: list(values.reviewed)
 		})
-		const scan = scanProject(project)
+		// The project's own TypeScript parses its files exactly; scans of unchanged files are kept between runs.
+		const typescript = await loadTypeScript(cwd)
+		const scanCache = openScanCache(cwd)
+		saveCache = scanCache.save
+		const scanOptions = { typescript, cache: scanCache.cache, functions: project.functions }
+		const scan = scanProject(project, scanOptions)
 		const total = scan.messages.size
+		/** The files built from the catalogs and the code: compiled catalogs, coverage for SEO, and routes' message lists. */
+		const writeArtifacts = () => {
+			const compiled = writeCompiled(project, scan, runs)
+			writeMeta(project, scan, runs)
+			const routes = writeRoutes(project, scanOptions)
+			return { compiled, routes }
+		}
 		const runs = project.locales.map(locale => openLocale(project, scan, locale))
 		const check = (locale: string) => (source: Parameters<typeof checkTranslation>[0], value: unknown) => checkTranslation(source, value, locale, project.glossary)
 		const reviewOf = (localeRun: LocaleRun) => reviewRun(scan, localeRun, check(localeRun.locale))
@@ -226,7 +242,7 @@ export const run = async (args: readonly string[], options: RunOptions = {}): Pr
 			ui.details([
 				['Source', project.sourceLocale, languageName(project.sourceLocale)],
 				['Locales', String(project.locales.length), project.locales.join(', ')],
-				['Messages', String(total), `in ${plural(scan.files, 'file')}`],
+				['Messages', String(total), `in ${plural(scan.files, 'file')}${typescript ? dim(' · parsed with TypeScript') : ''}`],
 				project.namespaced && ['Namespaces', String(project.namespaces.length), project.namespaces.map(({ name }) => `${name} ${dim(String(scan.byNamespace.get(name)?.length ?? 0))}`).join(', ')],
 				['Files', relative(cwd, fileOf(project, '<locale>', project.namespaced ? '<namespace>' : '')) || '.'],
 				Boolean(configFile) && ['Config', relative(cwd, configFile!)]
@@ -249,8 +265,24 @@ export const run = async (args: readonly string[], options: RunOptions = {}): Pr
 		const snapshots = runs.map(snapshotOf)
 		show('Catalogs', snapshots)
 
+		if (command === 'compile') {
+			const { compiled, routes } = writeArtifacts()
+			if (project.compile) log(ui.note('ok', compiled ? `Compiled ${plural(compiled, 'file')} into ${relative(cwd, project.compile.dir) || '.'}.` : 'The compiled catalogs are up to date.'))
+			if (project.routes) log(ui.note('ok', routes ? `Wrote the routes' messages to ${relative(cwd, routesFileOf(project))}.` : "The routes' messages are up to date."))
+			if (!project.compile && !project.routes) log(ui.note('info', `Updated ${relative(cwd, metaFileOf(project))}. Set \`compile\` or \`routes\` in the config to build more.`))
+			blank()
+			return 0
+		}
+
 		if (command === 'check') {
 			let failed = 0
+			// Built files that are there must match: a stale compiled catalog or routes list ships the wrong text.
+			const stale = [
+				compiledOutdated(project, scan, runs) && `compiled catalogs in ${relative(cwd, project.compile!.dir) || '.'} are out of date (run textlate compile)`,
+				routesOutdated(project, scanOptions) && `${relative(cwd, routesFileOf(project))} is out of date (run textlate compile)`
+			].filter((reason): reason is string => Boolean(reason))
+			for (const reason of stale) log(ui.note('fail', reason))
+			if (stale.length) failed++
 			for (const snap of snapshots) {
 				const { review } = snap
 				const missing = review.untranslated.size - review.previous.size
@@ -291,6 +323,7 @@ export const run = async (args: readonly string[], options: RunOptions = {}): Pr
 			let accepted = 0
 			for (const localeRun of runs) accepted += acceptRun(localeRun, scan)
 			for (const localeRun of runs) writeRun(localeRun, scan)
+			writeArtifacts()
 			log(
 				accepted
 					? ui.note('ok', `Marked ${plural(accepted, 'translation')} in ${plural(runs.length, 'locale')} as reviewed.`)
@@ -318,6 +351,7 @@ export const run = async (args: readonly string[], options: RunOptions = {}): Pr
 		const written = sum(runs.map(localeRun => writeRun(localeRun, scan)))
 
 		if (command === 'extract') {
+			writeArtifacts()
 			issues(snapshots)
 			const carried = sum(runs.map(localeRun => localeRun.sync.carried))
 			log(written ? ui.note('ok', `Updated ${plural(written, 'file')} in ${relative(cwd, project.dir) || '.'}.`) : ui.note('ok', 'Every file is already up to date.'))
@@ -389,6 +423,7 @@ export const run = async (args: readonly string[], options: RunOptions = {}): Pr
 			status.end()
 		}
 
+		writeArtifacts()
 		const after = runs.map(snapshotOf)
 		const left = sum(after.map(snap => snap.review.untranslated.size))
 		if (pending.length) show('After translating', after)
@@ -409,6 +444,9 @@ export const run = async (args: readonly string[], options: RunOptions = {}): Pr
 		return cause instanceof UsageError ? 2 : 1
 	} finally {
 		if (!options.prompt) prompt?.close()
+		try {
+			saveCache()
+		} catch {}
 	}
 }
 

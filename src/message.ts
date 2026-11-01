@@ -70,15 +70,26 @@ export const isParamValue = (value: unknown): value is ParamValue =>
 export const valueFor = (values: Values, name: string): unknown => (values && Object.hasOwn(values, name) ? values[name] : undefined)
 
 /** Render to a string. Tags keep their text, which suits `aria-label`, `title` and `<title>`. */
-export const renderString = (nodes: readonly Node[], locale: string, values: Values, timeZone?: string): string => {
+/**
+ * A value set apart from the text around it for the Unicode bidirectional algorithm (FIRST STRONG ISOLATE … POP
+ * DIRECTIONAL ISOLATE), so a Latin name or a number in right-to-left text keeps its punctuation where it belongs.
+ */
+export const isolate = (text: string): string => `\u2068${text}\u2069`
+
+export const renderString = (nodes: readonly Node[], locale: string, values: Values, timeZone?: string, isolated?: boolean): string => {
 	let out = ''
 	for (const node of nodes) {
 		if (typeof node === 'string') out += node
 		else if ('param' in node) {
 			const value = valueFor(values, node.param)
+			if (value === undefined) {
+				out += `{${node.param}}`
+				continue
+			}
 			// Text first: it's the most common value, and needs no formatting.
-			out += typeof value === 'string' ? value : value === undefined ? `{${node.param}}` : isParamValue(value) ? formatValue(locale, value, timeZone) : String(value)
-		} else out += renderString(node.children, locale, values, timeZone)
+			const text = typeof value === 'string' ? value : isParamValue(value) ? formatValue(locale, value, timeZone) : String(value)
+			out += isolated ? isolate(text) : text
+		} else out += renderString(node.children, locale, values, timeZone, isolated)
 	}
 	return out
 }

@@ -1,6 +1,6 @@
 import { cloneElement, createElement, Fragment, isValidElement, type ReactNode } from 'react'
 import { formatValue } from './format.js'
-import { isParamValue, valueFor, type Node } from './message.js'
+import { isolate, isParamValue, valueFor, type Node } from './message.js'
 
 type Values = Readonly<Record<string, unknown>> | undefined
 
@@ -19,16 +19,21 @@ export const renderRich = (
 	locale: string,
 	values: Values,
 	onMissingTag: (tag: string) => void,
-	timeZone?: string
+	timeZone?: string,
+	isolated?: boolean
 ): ReactNode[] => {
 	const out: ReactNode[] = []
 	for (const node of nodes) {
 		if (typeof node === 'string') out.push(node)
 		else if ('param' in node) {
 			const value = valueFor(values, node.param)
-			out.push(value === undefined ? `{${node.param}}` : isParamValue(value) ? formatValue(locale, value, timeZone) : (value as ReactNode))
+			if (value === undefined) out.push(`{${node.param}}`)
+			else if (isParamValue(value)) {
+				const text = typeof value === 'string' ? value : formatValue(locale, value, timeZone)
+				out.push(isolated ? isolate(text) : text)
+			} else out.push(value as ReactNode)
 		} else {
-			const children = renderRich(node.children, locale, values, onMissingTag, timeZone)
+			const children = renderRich(node.children, locale, values, onMissingTag, timeZone, isolated)
 			const render = valueFor(values, node.tag)
 			if (typeof render === 'function') out.push((render as (chunks: ReactNode) => ReactNode)(toNode(children)))
 			else if (isValidElement(render)) out.push(cloneElement(render, undefined, ...children))

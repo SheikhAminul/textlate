@@ -23,6 +23,13 @@ export const reuse = <K, V>(cache: Map<K, V>, key: K, create: (key: K) => V, lim
 	return value
 }
 
+/**
+ * `Intl`'s output with narrow no-break spaces (U+202F) as no-break spaces (U+00A0). Engines and ICU versions disagree on
+ * which of the two they put in times ("8:30 PM") and in French numbers ("1 234"), so a server and a browser could render
+ * the same value differently — a hydration mismatch. Both keep the text from wrapping; this one is the same everywhere.
+ */
+export const steady = (text: string): string => (text.includes('\u202f') ? text.replaceAll('\u202f', '\u00a0') : text)
+
 /** `Intl` calls cost hundreds of nanoseconds and counts repeat, so default-option results are remembered. */
 const memo = <K, V>(create: (key: K) => V) => {
 	const cache = new Map<K, V>()
@@ -52,7 +59,7 @@ export const pluralRules = (locale: string) =>
 const formatNumber = (locale: string) =>
 	reuse(defaults.number, locale, () => {
 		const format = new Intl.NumberFormat(locale)
-		return memo((value: number | bigint) => format.format(value === 0 ? 0 : value))
+		return memo((value: number | bigint) => steady(format.format(value === 0 ? 0 : value)))
 	})
 
 /**
@@ -63,16 +70,36 @@ export const formatValue = (locale: string, value: ParamValue, timeZone?: string
 	typeof value === 'string'
 		? value
 		: value instanceof Date
-			? dateFormat(locale, zoned(undefined, timeZone)).format(value)
+			? steady(dateFormat(locale, zoned(undefined, timeZone)).format(value))
 			: formatNumber(locale)(value)
 
-export const createFormatter = (locale: string, timeZone?: string): Formatter => ({
-	locale,
-	number: (value, options) =>
-		options ? configured('number', locale, options, () => new Intl.NumberFormat(locale, options)).format(value) : formatNumber(locale)(value),
-	date: (value, options) => dateFormat(locale, zoned(options, timeZone)).format(typeof value === 'string' ? new Date(value) : value),
-	relativeTime: (value, unit, options = {}) =>
-		configured('relative', locale, options, () => new Intl.RelativeTimeFormat(locale, options)).format(value, unit),
-	list: (items, options = {}) => configured('list', locale, options, () => new Intl.ListFormat(locale, options)).format(items),
-	displayName: (code, options) => configured('display', locale, options, () => new Intl.DisplayNames(locale, options)).of(code)
-})
+/** Each unit `relative` uses, its length in seconds, and the difference it's used up to: "44 seconds", then "1 minute". */
+const STEPS: [Intl.RelativeTimeFormatUnit, number, number][] = [
+	['second', 1, 45],
+	['minute', 60, 2_700],
+	['hour', 3_600, 79_200],
+	['day', 86_400, 2_246_400],
+	['month', 2_592_000, 27_648_000],
+	['year', 31_536_000, Infinity]
+]
+
+const toTime = (value: Date | number | string) => (value instanceof Date ? value.getTime() : typeof value === 'string' ? Date.parse(value) : value)
+
+export const createFormatter = (locale: string, timeZone?: string): Formatter => {
+	const relativeTime: Formatter['relativeTime'] = (value, unit, options = {}) =>
+		steady(configured('relative', locale, options, () => new Intl.RelativeTimeFormat(locale, options)).format(value, unit))
+	return {
+		locale,
+		number: (value, options) =>
+			options ? steady(configured('number', locale, options, () => new Intl.NumberFormat(locale, options)).format(value)) : formatNumber(locale)(value),
+		date: (value, options) => steady(dateFormat(locale, zoned(options, timeZone)).format(typeof value === 'string' ? new Date(value) : value)),
+		relativeTime,
+		relative: (value, { now = Date.now(), ...options } = {}) => {
+			const seconds = (toTime(value) - toTime(now)) / 1000
+			const [unit, size] = STEPS.find(([, , upTo]) => Math.abs(seconds) < upTo)!
+			return relativeTime(Math.round(seconds / size), unit, { numeric: 'auto', ...options })
+		},
+		list: (items, options = {}) => steady(configured('list', locale, options, () => new Intl.ListFormat(locale, options)).format(items)),
+		displayName: (code, options) => configured('display', locale, options, () => new Intl.DisplayNames(locale, options)).of(code)
+	}
+}

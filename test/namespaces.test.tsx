@@ -71,8 +71,11 @@ describe('namespaces', () => {
 		expect(browser.i18n.isLoaded('es-MX', ['app', 'catalog'])).toBe(true)
 		expect(browser.i18n.scope('es-MX').translate('Send a message')).toBe('Enviar un mensaje')
 		expect(browser.loader).not.toHaveBeenCalled()
-		// What's already loaded is kept.
-		browser.i18n.addMessages({ es: { app: { Save: 'Otro' } } })
+		// Parts of a namespace add up — a layout's messages, then a page's — and the same object is added once.
+		const page = { es: { app: { Close: 'Cerrar' } } }
+		browser.i18n.addMessages(page)
+		browser.i18n.addMessages(page)
+		expect(browser.i18n.scope('es').translate('Close')).toBe('Cerrar')
 		expect(browser.i18n.scope('es').translate('Save')).toBe('Guardar')
 	})
 

@@ -287,7 +287,7 @@ describe('run', () => {
 		write('src/app.tsx', `translate('Hello')`)
 		await cli(['translate', '-l', 'es'])
 		expect(readdirSync(join(cwd, 'src', 'locales')).sort()).toEqual(['.textlate', 'es.json'])
-		expect(readdirSync(join(cwd, 'src', 'locales', '.textlate'))).toEqual(['es.json'])
+		expect(readdirSync(join(cwd, 'src', 'locales', '.textlate')).sort()).toEqual(['es.json', 'meta.json'])
 		expect(existsSync(join(cwd, 'src', 'locales', 'es.json'))).toBe(true)
 	})
 })

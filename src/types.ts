@@ -147,6 +147,7 @@ export interface Translate {
  * format.number(1234.5, { style: 'currency', currency: 'EUR' }) // '€1,234.50'
  * format.date(new Date(), { dateStyle: 'long' })
  * format.relativeTime(-1, 'day', { numeric: 'auto' }) // 'yesterday'
+ * format.relative(post.createdAt, { now }) // '5 minutes ago'
  * format.list(['a', 'b', 'c']) // 'a, b, and c'
  * format.displayName('bn', { type: 'language' }) // 'Bangla'
  * ```
@@ -156,6 +157,11 @@ export interface Formatter {
 	number(value: number | bigint, options?: Intl.NumberFormatOptions): string
 	date(value: Date | number | string, options?: Intl.DateTimeFormatOptions): string
 	relativeTime(value: number, unit: Intl.RelativeTimeFormatUnit, options?: Intl.RelativeTimeFormatOptions): string
+	/**
+	 * How long ago, or how far ahead, a time is, in the unit that fits: "5 minutes ago", "yesterday", "in 3 months".
+	 * Pass the server's `now` to render the same text on the server and in the browser.
+	 */
+	relative(value: Date | number | string, options?: Intl.RelativeTimeFormatOptions & { now?: Date | number | undefined }): string
 	list(items: Iterable<string>, options?: Intl.ListFormatOptions): string
 	displayName(code: string, options: Intl.DisplayNamesOptions): string | undefined
 }
@@ -240,17 +246,40 @@ export interface I18n<L extends string = string> extends Scope<L> {
 	 * Load a locale's namespaces and return them, with their fallbacks', for `<I18nProvider messages>`: the browser then
 	 * starts with exactly what the page uses, and loads nothing.
 	 */
-	getMessages(locale?: string, namespaces?: string | readonly string[]): Promise<Messages>
-	/** Add translations by locale and namespace, e.g. ones sent from the server. Namespaces already loaded are kept. */
+	getMessages(locale?: string, namespaces?: string | readonly string[], options?: { only?: Iterable<string> | undefined }): Promise<Messages>
+	/**
+	 * Add translations by locale and namespace, e.g. ones sent from the server. Parts of a namespace add up (a layout's
+	 * messages, then a page's); a translation already in memory is replaced by the one added.
+	 */
 	addMessages(messages: Messages): void
 	/** Add or replace one namespace of a locale (default: the first default namespace). Replacing re-renders subscribers. */
 	addTranslations(locale: L, translations: Translations, namespace?: string): void
 	/** One loaded namespace of a locale (default: the first default namespace), if loaded. */
 	getTranslations(locale: L, namespace?: string): Translations | undefined
+	/** Let go of a locale's translations (and scopes); it loads again when asked for. See `maxLocales` to do it by itself. */
+	unload(locale: L): void
 
 	/** A new instance with its own active locale (and time zone) that shares this one's config and loaded translations. */
 	clone(options?: { locale?: string; timeZone?: string | undefined }): I18n<L>
 	/** `subscribe` and `getSnapshot` follow the `useSyncExternalStore` contract; the React bindings use them. */
 	subscribe(listener: () => void): () => void
 	getSnapshot(): I18nSnapshot<L>
+}
+
+/** One namespace of one locale in `<dir>/.textlate/meta.json`, which the CLI writes. */
+export interface MetaEntry {
+	/** Messages in the namespace. */
+	readonly messages: number
+	/** Of them, translated. */
+	readonly translated: number
+	/** Of them, reviewed by a person. */
+	readonly reviewed: number
+	/** When its translations last changed (ISO 8601). */
+	readonly updated: string
+	readonly hash?: string | undefined
+}
+
+/** `<dir>/.textlate/meta.json`: each locale's namespaces, how much of them is translated and reviewed, and since when. */
+export interface Meta {
+	readonly [locale: string]: { readonly [namespace: string]: MetaEntry } | undefined
 }

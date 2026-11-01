@@ -1,19 +1,9 @@
-import { negotiateLocale } from 'textlate'
-import { NextResponse, type NextRequest } from 'next/server'
-import { i18n } from './i18n'
+import { createProxy } from 'textlate/next'
+import { routing } from './i18n'
 
-/** Sends requests without a locale prefix to the best locale: saved choice first, then `Accept-Language`. */
-export const proxy = (request: NextRequest) => {
-	const { pathname } = request.nextUrl
-	const hasLocale = i18n.locales.some(locale => pathname === `/${locale}` || pathname.startsWith(`/${locale}/`))
-	if (hasLocale) return
-
-	const locale =
-		i18n.match(request.cookies.get('NEXT_LOCALE')?.value) ??
-		negotiateLocale(request.headers.get('accept-language'), i18n.locales, i18n.sourceLocale)
-	request.nextUrl.pathname = `/${locale}${pathname}`
-	return NextResponse.redirect(request.nextUrl)
-}
+// Addresses with a locale are served as they are; `/` and other addresses without one go to the visitor's saved choice,
+// then their browser's language.
+export const proxy = createProxy(routing)
 
 export const config = {
 	matcher: ['/((?!_next|api|.*\\..*).*)']

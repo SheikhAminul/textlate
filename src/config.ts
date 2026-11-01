@@ -126,6 +126,18 @@ export interface Config {
 	 * reviewed once someone edits it, or `textlate accept` marks it. `['*']` for every locale. Default none.
 	 */
 	reviewed?: readonly string[] | undefined
+	/**
+	 * Compiled catalogs for the browser: only translated messages, keyed by a short hash of their text (or the text, with
+	 * `keys: 'text'`) — a third smaller or more. `extract`, `translate` and `compile` write them to `dir` (default
+	 * `<dir>/.compiled`); load them with `createI18n({ keys: 'hashed', loader })`.
+	 */
+	compile?: boolean | { dir?: string | undefined; keys?: 'hashed' | 'text' | undefined } | undefined
+	/**
+	 * Next.js app directories whose routes get a list of the messages their client components use, in
+	 * `<dir>/.textlate/routes.json`: pass a route's list to `getMessages(lang, namespaces, { only })`, and the browser
+	 * receives exactly what the route shows.
+	 */
+	routes?: { app: string | readonly string[] } | undefined
 	/** How `textlate translate` translates. */
 	ai?: AIConfig | undefined
 }

@@ -4,7 +4,7 @@ import { join, relative, resolve } from 'node:path'
 import type { Config, GlossaryTerm } from '../config.js'
 import type { Message } from '../types.js'
 import { isTranslated, readLocaleFile, serialize, writeLocaleFile, type LocaleFile, type LocaleMessages } from './catalog.js'
-import { scanFiles, type ScanWarning } from './scan.js'
+import { scanFiles, type ScanOptions, type ScanWarning } from './scan.js'
 import { decodeEntry, encodeEntry, hashOf, syncLocale, textOfKey, type StateEntry, type SyncResult } from './sync.js'
 
 /** The namespace of a project with one file per locale. */
@@ -37,6 +37,12 @@ export interface Project {
 	glossary: Readonly<Record<string, GlossaryTerm>> | undefined
 	/** Whether a locale's translations must be reviewed for `check` to pass. */
 	reviewed: (locale: string) => boolean
+	/** Where compiled catalogs go, and how they're keyed. */
+	compile: { dir: string; keys: 'hashed' | 'text' } | undefined
+	/** The Next.js app directories to list each route's client messages for. */
+	routes: { app: string[] } | undefined
+	/** The project-wide functions, for files in no namespace. */
+	functions: readonly string[] | undefined
 }
 
 export interface ProjectOptions {
@@ -113,7 +119,15 @@ export const resolveProject = (cwd: string, config: Config, options: ProjectOpti
 		keepUnused: options.keepUnused ?? config.keepUnused ?? false,
 		carryOver: config.carryOver ?? true,
 		glossary: config.glossary,
-		reviewed: locale => reviewed.has('*') || reviewed.has(locale)
+		reviewed: locale => reviewed.has('*') || reviewed.has(locale),
+		compile: config.compile
+			? {
+					dir: resolve(cwd, (typeof config.compile === 'object' && config.compile.dir) || join(dir, '.compiled')),
+					keys: (typeof config.compile === 'object' && config.compile.keys) || 'hashed'
+				}
+			: undefined,
+		routes: config.routes ? { app: typeof config.routes.app === 'string' ? [config.routes.app] : [...config.routes.app] } : undefined,
+		functions: options.functions ?? config.functions
 	}
 }
 
@@ -134,13 +148,13 @@ export interface Scan {
 	files: number
 }
 
-export const scanProject = (project: Project): Scan => {
+export const scanProject = (project: Project, options: Pick<ScanOptions, 'typescript' | 'cache'> = {}): Scan => {
 	const messages = new Map<string, Message>()
 	const byNamespace = new Map<string, string[]>()
 	const warnings = new Map<string, ScanWarning>()
 	let count = 0
 	for (const namespace of project.namespaces) {
-		const scan = scanFiles(namespace.include, project.cwd, namespace)
+		const scan = scanFiles(namespace.include, project.cwd, { ...namespace, ...options })
 		count += scan.files
 		for (const [key, message] of scan.messages) if (typeof message !== 'string' || !messages.has(key)) messages.set(key, message)
 		byNamespace.set(namespace.name, [...scan.messages.keys()])

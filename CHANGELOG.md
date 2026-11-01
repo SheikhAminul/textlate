@@ -2,7 +2,7 @@
 
 ## 3.0.0
 
-textlate 3 is built for large apps: tens of thousands of messages, dozens of languages, and people reviewing what AI wrote. Apps with one file per locale keep working as they are.
+textlate 3 is built for large apps: tens of thousands of messages, dozens of languages, search engines finding every page in each of them, and people reviewing what AI wrote. Apps with one file per locale keep working as they are.
 
 ### Runtime
 
@@ -28,8 +28,35 @@ textlate 3 is built for large apps: tens of thousands of messages, dozens of lan
 - `textlate/pseudo`: a pseudo-locale (`pseudoLocale('en-XA')`) that shows untranslated text accented, longer and in brackets.
 - `textlate/eslint`: an ESLint plugin whose `no-untranslated-text` rule reports text written plainly in JSX and in attributes people read.
 
+### SEO
+
+- `textlate/routing`: `defineRouting` says how locales appear in addresses (`as-needed`, so addresses already indexed keep their place, or `always`); safe to import anywhere.
+- `textlate/next`:
+  - `createSeo` — `metadata()` gives each page its canonical address, hreflang links with `x-default` and Open Graph locales; `sitemap()` lists every page in every indexed language with its alternates, dated by its translations' last change; a locale below `minCoverage` of a page's messages translated (or reviewed) is `noindex` and left out of hreflang links and sitemaps.
+  - `createProxy` — never redirects an address with a locale; one address per page; per-visitor redirects marked so caches keep them apart.
+  - `createGetLocale` — the locale from `next/root-params`, or a 404.
+- `textlate/next/link`: `createLink` — a `<Link>` that keeps the active locale, or links to another with `hrefLang` and `lang`.
+- The CLI writes each locale's coverage and last change to `<dir>/.textlate/meta.json`.
+
+### Performance and scale
+
+- One memory budget for every locale (`memoLimit`, 50,000): memos move on a generation when it fills, idle locales included. 35 locales × 20,000 messages: 436 MB → 130 MB.
+- `maxLocales` unloads the least recently used locales; `i18n.unload(locale)`.
+- Compiled catalogs (`compile: true`, `textlate compile`, `keys: 'hashed'`): translated messages only, under short hashes — a third smaller or more.
+- Each route's client messages (`routes: { app }` → `<dir>/.textlate/routes.json`), found by following imports (tsconfig `paths`, workspace packages); `getMessages(locale, namespaces, { only })` sends exactly those. Parts of a namespace added by a layout and a page add up.
+- Files are parsed with the project's TypeScript 5 when it has one (aliases, member calls, exact imports), and scans of unchanged files are kept in `node_modules/.cache/textlate`.
+- Hydration-safe formatting: the same no-break space whatever the engine, `format.relative()`, `<Time>` and `<I18nProvider now>`.
+
+### Correctness
+
+- Bidi isolation: values in right-to-left locales are wrapped in Unicode isolates (`isolate: 'rtl' | 'always' | 'never'`).
+- Renamed language codes match today's, both ways: `iw`/`he`, `in`/`id`, `ji`/`yi`, `jw`/`jv`, `mo`/`ro`, `no`/`nb`, `tl`/`fil`, `sh`/`sr-Latn`.
+
 ### Upgrading from 1.x
 
+- **Right-to-left text now has invisible isolates around values** (U+2068 … U+2069). Tests that compare Arabic, Hebrew, Persian or Urdu strings need them, or `isolate: 'never'`.
+- **`addMessages` merges** into a namespace already in memory (a translation added replaces the one there), rather than skipping it.
+- **Formatted dates, numbers and lists write U+00A0 where `Intl` writes U+202F**, so servers and browsers agree.
 - **`ai.concurrency` now counts requests, not locales.** It was the number of locales translated at the same time (4); it's now the number of requests in flight across every locale (8). Lower it if your provider's rate limit is tight.
 - **Commit `<dir>/.textlate/`.** `extract` and `translate` now keep each translation's state there. Translations from before count as AI-made: if you require reviews (`reviewed`), run `textlate accept` for the locales already reviewed.
 - **Claude requests send the system prompt as a cached block** (`system: [{ type: 'text', text, cache_control }]`). An Anthropic-compatible proxy behind `ai.baseUrl` must accept that form, as the Claude API does.

@@ -1,6 +1,7 @@
 import { createFormatter, reuse } from './format.js'
 import { getDirection, matchLocale } from './locale.js'
 import { compile, isPluralTranslation, keyOf, pluralCategory, renderString, type Compiled } from './message.js'
+import { hashKey } from './hash.js'
 import { isRich, renderRich, toNode } from './rich.js'
 import type {
 	I18n,
@@ -69,6 +70,27 @@ export interface I18nConfig<Locales extends Record<string, TranslationSource> | 
 	 */
 	timeZone?: string | undefined
 	/**
+	 * How the translation files are keyed: by each message's text (the files `textlate extract` writes), or by its short
+	 * hash (the compiled files `textlate compile` writes, a third smaller or more). Default `'text'`.
+	 */
+	keys?: 'text' | 'hashed' | undefined
+	/**
+	 * Messages the instance (and its clones) remember resolved, across every locale, before the least used are let go.
+	 * Default `50_000`: a large app's every message in one locale, and the busy ones of many on a server.
+	 */
+	memoLimit?: number | undefined
+	/**
+	 * Locales kept in memory at most; the least recently used beyond it are unloaded, and load again when asked for. For
+	 * long-running servers that serve many languages. Default: no limit.
+	 */
+	maxLocales?: number | undefined
+	/**
+	 * Set values apart from the text around them for the bidirectional algorithm (Unicode isolates), so a Latin name or a
+	 * number in Arabic or Hebrew text keeps its punctuation in place: in right-to-left locales (`'rtl'`, the default),
+	 * `'always'` (for right-to-left values, like Hebrew names, in left-to-right text too) or `'never'`.
+	 */
+	isolate?: 'rtl' | 'always' | 'never' | undefined
+	/**
 	 * Called once per message and locale that isn't translated yet, e.g. to log it. Return a string to show instead of
 	 * the source text (see `textlate/pseudo` for a pseudo-locale).
 	 */
@@ -76,14 +98,19 @@ export interface I18nConfig<Locales extends Record<string, TranslationSource> | 
 }
 
 type AnyConfig = I18nConfig<Record<string, TranslationSource> | readonly string[], string>
-type Translation = string | PluralTranslation
 
-/** One locale's loaded namespaces, and their translations merged for lookup. */
+/** One locale's loaded namespaces. */
 interface Store {
 	/** In the order they were added: a message translated in two namespaces takes the first one's translation. */
 	readonly namespaces: Map<string, Translations>
-	/** Translated messages only (no `""`), by key. Rebuilt on first lookup after a namespace changes. */
-	merged: Map<string, Translation> | undefined
+	/** When the locale was last asked for, to unload the least recently used. */
+	used: number
+}
+
+/** A scope's resolved messages: by text, and for message objects by context and shape. */
+interface Memo {
+	readonly texts: Map<string, Entry>
+	readonly objects: Map<string | undefined, [text: Map<string, Entry>, plural: Map<string, Entry>]>
 }
 
 interface Shared {
@@ -94,15 +121,24 @@ interface Shared {
 	readonly defaults: readonly string[]
 	/** Whether the source locale has translations to load. Usually not: its text is in the code. */
 	readonly sourceLoads: boolean
+	readonly hashed: boolean
 	readonly stores: Map<string, Store>
 	readonly loading: Map<string, Promise<void>>
 	readonly chains: Map<string, readonly string[]>
 	readonly scopes: Map<string, Scope>
 	readonly warned: Set<string>
+	/** Messages objects already added, so a provider re-rendering with the same ones adds nothing. */
+	readonly added: WeakSet<object>
 	/** Instances with subscribers, re-rendered when translations change. */
 	readonly subscribed: Set<() => void>
 	/** Bumped whenever translations change, invalidating the scopes' memos. */
 	version: number
+	/** Messages resolved since the memos last moved on a generation, across every scope. */
+	memoSize: number
+	/** Each scope's way of moving its memo on a generation, by the scope's key. */
+	readonly rotations: Map<string, () => void>
+	/** Bumped on every use, to order locales by when they were last used. */
+	clock: number
 }
 
 /** A resolved message: the locale it renders in, and its text compiled once (plural forms on first use). */
@@ -112,11 +148,7 @@ type Entry =
 
 type Values = Readonly<Record<string, unknown>> | undefined
 
-/**
- * Untranslated messages a scope remembers before it starts over. Translated ones don't count: there are only as many as
- * the catalogs hold, while untranslated text can come from anywhere (e.g. text built from user input).
- */
-const MISS_LIMIT = 5_000
+const MEMO_LIMIT = 50_000
 const RESOLVED = Promise.resolve()
 
 const warnOnce = (shared: Shared, id: string, message: string) => {
@@ -140,9 +172,18 @@ const chainOf = (shared: Shared, locale: string): readonly string[] =>
 		return [...new Set([locale, ...fallbacks, ...(baseLocale ? [baseLocale] : []), shared.sourceLocale])]
 	})
 
+/** Mark a locale (and its fallbacks) as just used. */
+const touch = (shared: Shared, locale: string) => {
+	const now = ++shared.clock
+	for (const entry of chainOf(shared, locale)) {
+		const store = shared.stores.get(entry)
+		if (store) store.used = now
+	}
+}
+
 const storeOf = (shared: Shared, locale: string): Store => {
 	let store = shared.stores.get(locale)
-	if (!store) shared.stores.set(locale, (store = { namespaces: new Map(), merged: undefined }))
+	if (!store) shared.stores.set(locale, (store = { namespaces: new Map(), used: ++shared.clock }))
 	return store
 }
 
@@ -158,16 +199,45 @@ const missingOf = (shared: Shared, locale: string, namespaces: readonly string[]
 
 const isLoaded = (shared: Shared, locale: string, namespaces: readonly string[]) => missingOf(shared, locale, namespaces).length === 0
 
-const setTranslations = (shared: Shared, locale: string, namespace: string, translations: Translations, notify: boolean) => {
+/** Let go of a locale's translations, and the scopes that render with them. It loads again when asked for. */
+const unload = (shared: Shared, locale: string) => {
+	if (!shared.stores.delete(locale)) return
+	for (const [key, scope] of shared.scopes) {
+		if (!chainOf(shared, scope.locale).includes(locale)) continue
+		shared.scopes.delete(key)
+		shared.rotations.delete(key)
+	}
+}
+
+/** Over `maxLocales`: unload the least recently used, never the one just added or the ones it falls back on. */
+const evict = (shared: Shared, keep: string) => {
+	const limit = shared.config.maxLocales
+	if (!limit || shared.stores.size <= limit) return
+	const kept = new Set(chainOf(shared, keep))
+	const candidates = [...shared.stores].filter(([locale]) => !kept.has(locale)).sort(([, a], [, b]) => a.used - b.used)
+	for (const [locale] of candidates) {
+		if (shared.stores.size <= limit) break
+		unload(shared, locale)
+	}
+}
+
+/**
+ * Put a namespace of a locale in memory: `load` (it finished loading: on screen at once), `add` (sent from the server
+ * while rendering: merged in quietly) or `replace` (re-renders what shows it).
+ */
+const setTranslations = (shared: Shared, locale: string, namespace: string, translations: Translations, mode: 'load' | 'add' | 'replace') => {
 	// Whatever was in memory before is on screen: so is the source text, which the source locale's translations override.
 	const replaced = has(shared, locale, namespace)
 	const store = storeOf(shared, locale)
-	store.namespaces.set(namespace, translations)
-	store.merged = undefined
+	const existing = store.namespaces.get(namespace)
+	// The server may send a page's messages a part at a time (a layout's, then a page's): parts add up.
+	store.namespaces.set(namespace, mode === 'add' && existing ? { ...existing, ...translations } : translations)
+	store.used = ++shared.clock
 	shared.version++
-	// A replacement changes what's on screen, and so does anything that finished loading. Translations added while
-	// rendering (as I18nProvider does with the server's) must not notify, or other components would update mid-render.
-	if (replaced || notify) for (const refresh of [...shared.subscribed]) refresh()
+	// Translations added while rendering (as I18nProvider does with the server's) must not notify, or other components
+	// would update mid-render.
+	if (mode === 'load' || (mode === 'replace' && replaced)) for (const refresh of [...shared.subscribed]) refresh()
+	evict(shared, locale)
 }
 
 /** Accepts `import('./es.json')` namespaces as well as plain objects. */
@@ -193,7 +263,7 @@ const loadOne = (shared: Shared, locale: string, namespace: string): Promise<voi
 			.then(() => (typeof source === 'function' ? source() : (source ?? {})))
 			.then(module => {
 				// Translations added while loading (e.g. sent from the server) win over the loader's.
-				if (!shared.stores.get(locale)?.namespaces.has(namespace)) setTranslations(shared, locale, namespace, unwrapModule(module), true)
+				if (!shared.stores.get(locale)?.namespaces.has(namespace)) setTranslations(shared, locale, namespace, unwrapModule(module), 'load')
 			})
 			.finally(() => shared.loading.delete(id))
 		shared.loading.set(id, pending)
@@ -202,34 +272,27 @@ const loadOne = (shared: Shared, locale: string, namespace: string): Promise<voi
 }
 
 const load = (shared: Shared, locale: string, namespaces: readonly string[]): Promise<void> => {
+	touch(shared, locale)
 	const missing = missingOf(shared, locale, namespaces)
 	return missing.length ? Promise.all(missing.map(([entry, namespace]) => loadOne(shared, entry, namespace))).then(() => {}) : RESOLVED
 }
 
-/** A store's translated messages, merged across its namespaces: one `Map` lookup per message. */
-const mergedOf = (store: Store): Map<string, Translation> => {
-	if (!store.merged) {
-		const merged = new Map<string, Translation>()
-		for (const translations of store.namespaces.values()) {
-			for (const key of Object.keys(translations)) {
-				if (merged.has(key)) continue
-				const value = translations[key]
-				// `""` and plurals without `other` aren't translated yet.
-				if (typeof value === 'string' ? value : isPluralTranslation(value) && value.other) merged.set(key, value!)
-			}
-		}
-		store.merged = merged
-	}
-	return store.merged
-}
-
-/** The translation of `key` in `locale` or its fallbacks. */
+/**
+ * The translation of `key` in `locale` or its fallbacks, from the namespaces in memory: the first that has it
+ * translated (`""` and plurals without `other` aren't yet). It runs once per message per locale, then the memo answers.
+ */
 const lookup = (shared: Shared, locale: string, key: string): Entry | undefined => {
+	const id = shared.hashed ? hashKey(key) : key
 	for (const entry of chainOf(shared, locale)) {
 		const store = shared.stores.get(entry)
-		const value = store && mergedOf(store).get(key)
-		if (value === undefined) continue
-		return typeof value === 'string' ? { locale: entry, message: compile(value) } : { locale: entry, plural: value, forms: {} }
+		if (!store) continue
+		for (const translations of store.namespaces.values()) {
+			if (!Object.hasOwn(translations, id)) continue
+			const value = translations[id]
+			if (typeof value === 'string') {
+				if (value) return { locale: entry, message: compile(value) }
+			} else if (isPluralTranslation(value) && value.other) return { locale: entry, plural: value, forms: {} }
+		}
 	}
 	return undefined
 }
@@ -240,7 +303,7 @@ const select = (entry: Entry, count: unknown): Compiled => {
 	return (entry.forms[category] ??= compile(entry.plural[category]!))
 }
 
-const createScope = (shared: Shared, locale: string, timeZone: string | undefined): Scope => {
+const createScope = (shared: Shared, locale: string, timeZone: string | undefined, rotation: { rotate?: () => void }): Scope => {
 	const { sourceLocale, config } = shared
 
 	// Untranslated messages render their own text, in the source locale.
@@ -259,53 +322,82 @@ const createScope = (shared: Shared, locale: string, timeZone: string | undefine
 	// Each message resolves through the fallback chain once, then is served from a memo until translations change.
 	// Memos are keyed by the text itself, never a string built per call: one for text, and for message objects one
 	// per context and shape (a plural and a string with the same text share a translation, but not a source fallback).
-	// Only untranslated messages count towards starting over, so a catalog of any size stays resolved.
-	let texts = new Map<string, Entry>()
-	let objects = new Map<string | undefined, [text: Map<string, Entry>, plural: Map<string, Entry>]>()
-	let misses = 0
+	// Memory stays bounded across every scope: once `memoLimit` messages were resolved, each scope's memo becomes its
+	// previous one, and only messages used again are carried over, so a busy server keeps what it uses.
+	const createMemo = (): Memo => ({ texts: new Map(), objects: new Map() })
+	let current = createMemo()
+	let previous = createMemo()
 	let version = shared.version
+	const limit = config.memoLimit ?? MEMO_LIMIT
+	const slot = (memo: Memo, message: Message): Map<string, Entry> => {
+		if (typeof message === 'string') return memo.texts
+		let memos = memo.objects.get(message.context)
+		if (!memos) memo.objects.set(message.context, (memos = [new Map(), new Map()]))
+		return message.text === undefined ? memos[1] : memos[0]
+	}
+	const rotate = () => {
+		previous = current
+		current = createMemo()
+	}
+	const remember = (memo: Map<string, Entry>, text: string, entry: Entry) => {
+		memo.set(text, entry)
+		// Every scope moves on at once — the idle ones too, so a locale nobody asks for lets go of its messages.
+		if (++shared.memoSize >= limit) {
+			shared.memoSize = 0
+			for (const each of [...shared.rotations.values()]) each()
+		}
+	}
 	const resolve = (message: Message): Entry => {
-		if (version !== shared.version || misses >= MISS_LIMIT) {
-			texts = new Map()
-			objects = new Map()
-			misses = 0
+		if (version !== shared.version) {
+			current = createMemo()
+			previous = createMemo()
 			version = shared.version
 		}
-		let memo = texts
-		let text = message as string
-		if (typeof message !== 'string') {
-			let memos = objects.get(message.context)
-			if (!memos) objects.set(message.context, (memos = [new Map(), new Map()]))
-			memo = message.text === undefined ? memos[1] : memos[0]
-			text = message.text ?? message.other!
-		}
+		const text = typeof message === 'string' ? message : (message.text ?? message.other!)
+		const memo = slot(current, message)
 		let entry = memo.get(text)
-		if (!entry) {
-			entry = lookup(shared, locale, keyOf(message))
-			if (!entry) {
-				entry = untranslated(message)
-				misses++
-			}
-			memo.set(text, entry)
-		}
+		if (entry) return entry
+		entry = slot(previous, message).get(text) ?? lookup(shared, locale, keyOf(message)) ?? untranslated(message)
+		remember(memo, text, entry)
 		return entry
 	}
+
+	rotation.rotate = rotate
+	const dir = getDirection(locale)
+	// Values in right-to-left text are set apart, so their punctuation stays put; text the scope shows is what counts.
+	const isolated = config.isolate === 'always' || (config.isolate !== 'never' && dir === 'rtl')
 
 	const translate = (message: Message, values?: Values) => {
 		const entry = resolve(message)
 		const compiled = select(entry, values?.count)
 		if (typeof compiled === 'string') return compiled
-		if (!isRich(values)) return renderString(compiled, entry.locale, values, timeZone)
+		if (!isRich(values)) return renderString(compiled, entry.locale, values, timeZone, isolated)
 		const key = keyOf(message)
 		const onMissingTag = (tag: string) => warnOnce(shared, `tag\0${key}\0${tag}`, `No renderer for <${tag}> in "${key}".`)
-		return toNode(renderRich(compiled, entry.locale, values, onMissingTag, timeZone))
+		return toNode(renderRich(compiled, entry.locale, values, onMissingTag, timeZone, isolated))
 	}
 
-	return { locale, dir: getDirection(locale), timeZone, translate: translate as Translate, format: createFormatter(locale, timeZone) }
+	return { locale, dir, timeZone, translate: translate as Translate, format: createFormatter(locale, timeZone) }
 }
 
-const getScope = (shared: Shared, locale: string, timeZone: string | undefined) =>
-	reuse(shared.scopes, timeZone ? `${locale}\0${timeZone}` : locale, () => createScope(shared, locale, timeZone))
+/** Scopes kept at most: a scope per locale and time zone, and time zones can come from requests. */
+const SCOPE_LIMIT = 2_000
+
+const getScope = (shared: Shared, locale: string, timeZone: string | undefined) => {
+	const key = timeZone ? `${locale}\0${timeZone}` : locale
+	let scope = shared.scopes.get(key)
+	if (!scope) {
+		if (shared.scopes.size >= SCOPE_LIMIT) {
+			shared.scopes.clear()
+			shared.rotations.clear()
+		}
+		const rotation: { rotate?: () => void } = {}
+		scope = createScope(shared, locale, timeZone, rotation)
+		shared.scopes.set(key, scope)
+		shared.rotations.set(key, rotation.rotate!)
+	}
+	return scope
+}
 
 const createInstance = (shared: Shared, requested: string | undefined, timeZone: string | undefined): I18n => {
 	const { config, locales, sourceLocale, defaults } = shared
@@ -406,31 +498,51 @@ const createInstance = (shared: Shared, requested: string | undefined, timeZone:
 			return load(shared, resolved, listOf(options?.namespaces, defaults)).then(() => getScope(shared, resolved, options?.timeZone ?? timeZone))
 		},
 		isLoaded: (locale, namespaces) => isLoaded(shared, resolveLocale(locale), listOf(namespaces, defaults)),
-		scope: (locale, options) => getScope(shared, match(locale) ?? sourceLocale, options?.timeZone ?? timeZone),
-		getMessages: (locale, namespaces) => {
+		scope: (locale, options) => {
+			const resolved = match(locale) ?? sourceLocale
+			touch(shared, resolved)
+			return getScope(shared, resolved, options?.timeZone ?? timeZone)
+		},
+		getMessages: (locale, namespaces, options) => {
 			const resolved = resolveLocale(locale)
 			const wanted = listOf(namespaces, defaults)
 			return load(shared, resolved, wanted).then(() => {
+				// Only the messages asked for: what a page's client components use, by their keys (see `textlate extract`'s routes).
+				const only = options?.only && new Set(shared.hashed ? [...options.only].map(hashKey) : options.only)
 				const messages: Record<string, Record<string, Translations>> = {}
 				for (const entry of chainOf(shared, resolved)) {
 					const store = shared.stores.get(entry)
 					if (!store) continue
 					for (const namespace of wanted) {
 						const translations = store.namespaces.get(namespace)
-						if (translations) (messages[entry] ??= {})[namespace] = translations
+						if (!translations) continue
+						let picked: Record<string, unknown> = translations
+						if (only) {
+							picked = {}
+							for (const key of only) {
+								// Only what's translated: untranslated text shows the source text anyway.
+								const value = Object.hasOwn(translations, key) ? translations[key] : undefined
+								if (value) picked[key] = value
+							}
+						}
+						;(messages[entry] ??= {})[namespace] = picked as Translations
 					}
 				}
 				return messages as Messages
 			})
 		},
 		addMessages: messages => {
+			// A provider adds the same messages on every render: once is enough.
+			if (shared.added.has(messages)) return
+			shared.added.add(messages)
 			for (const [locale, namespaces] of Object.entries(messages)) {
 				for (const [namespace, translations] of Object.entries(namespaces ?? {})) {
-					if (translations && !shared.stores.get(locale)?.namespaces.has(namespace)) setTranslations(shared, locale, namespace, translations, false)
+					if (translations) setTranslations(shared, locale, namespace, translations, 'add')
 				}
 			}
 		},
-		addTranslations: (locale, translations, namespace = defaults[0]!) => setTranslations(shared, locale, namespace, translations, false),
+		addTranslations: (locale, translations, namespace = defaults[0]!) => setTranslations(shared, locale, namespace, translations, 'replace'),
+		unload: locale => unload(shared, locale),
 		getTranslations: (locale, namespace = defaults[0]!) => shared.stores.get(locale)?.namespaces.get(namespace),
 		clone: options => createInstance(shared, options?.locale ?? snapshot.locale, options && 'timeZone' in options ? options.timeZone : timeZone),
 		subscribe: listener => {
@@ -496,13 +608,18 @@ export const createI18n = <const Locales extends Record<string, TranslationSourc
 		chains: new Map(),
 		scopes: new Map(),
 		warned: new Set(),
+		hashed: config.keys === 'hashed',
+		added: new WeakSet(),
 		subscribed: new Set(),
-		version: 0
+		version: 0,
+		memoSize: 0,
+		rotations: new Map(),
+		clock: 0
 	}
 	// Translations given as objects are in memory from the start.
 	for (const locale of locales) {
 		const translations = sources?.[locale]
-		if (typeof translations === 'object') setTranslations(shared, locale, DEFAULT_NAMESPACE, translations, false)
+		if (typeof translations === 'object') setTranslations(shared, locale, DEFAULT_NAMESPACE, translations, 'add')
 	}
 	return createInstance(shared, config.locale, config.timeZone) as unknown as I18n<S | LocaleNames<Locales>>
 }

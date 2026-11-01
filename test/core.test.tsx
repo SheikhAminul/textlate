@@ -50,7 +50,7 @@ describe('t', () => {
 	it('translates into a loaded locale', async () => {
 		const ar = createTestI18n().scope('ar')
 		expect(ar.translate('Plain text')).toBe('نص عادي')
-		expect(ar.translate('Hello, {name}!', { name: 'Ada' })).toBe('مرحبا، Ada!')
+		expect(ar.translate('Hello, {name}!', { name: 'Ada' })).toBe('مرحبا، \u2068Ada\u2069!')
 		expect(ar.dir).toBe('rtl')
 
 		const bn = await createTestI18n().load('bn')
@@ -78,7 +78,7 @@ describe('t', () => {
 		expect(loose(translate)(inbox)).toBe('You have {count} messages')
 
 		const ar = createTestI18n().scope('ar')
-		expect([0, 1, 2, 3, 11, 100].map(count => ar.translate(inbox, { count }))).toEqual(['لا رسائل', 'رسالة واحدة', 'رسالتان', '3 رسائل', '11 رسالة', '100 رسالة'])
+		expect([0, 1, 2, 3, 11, 100].map(count => ar.translate(inbox, { count }))).toEqual(['لا رسائل', 'رسالة واحدة', 'رسالتان', '\u20683\u2069 رسائل', '\u206811\u2069 رسالة', '\u2068100\u2069 رسالة'])
 	})
 
 	it('tells apart the same text in different contexts', () => {

@@ -40,5 +40,5 @@ it('hydrates without mismatches, then applies the detected locale', async () => 
 
 	expect(onRecoverableError).not.toHaveBeenCalled()
 	expect(consoleError).not.toHaveBeenCalled()
-	expect(container.innerHTML).toBe('<p lang="ar" dir="rtl">مرحبا، Ada!</p>')
+	expect(container.innerHTML).toBe('<p lang="ar" dir="rtl">مرحبا، \u2068Ada\u2069!</p>')
 })

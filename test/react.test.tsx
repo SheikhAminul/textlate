@@ -44,7 +44,7 @@ describe('I18nProvider + hooks', () => {
 		expect(text('greeting')).toBe('Hello, Ada!')
 
 		await act(() => screen.getByText('ar').click())
-		expect(text('greeting')).toBe('مرحبا، Ada!')
+		expect(text('greeting')).toBe('مرحبا، \u2068Ada\u2069!')
 		expect(text('locale')).toBe('ar')
 	})
 
@@ -56,7 +56,7 @@ describe('I18nProvider + hooks', () => {
 			</I18nProvider>
 		)
 		await act(() => i18n.setLocale('ar'))
-		expect(text('greeting')).toBe('مرحبا، Ada!')
+		expect(text('greeting')).toBe('مرحبا، \u2068Ada\u2069!')
 	})
 
 	it('keeps the current locale on screen while a lazy one loads', async () => {
@@ -221,7 +221,7 @@ describe('locale prop', () => {
 				{pinned(i18n, 'ar')}
 			</>
 		)
-		expect(screen.getAllByTestId('greeting').map(node => node.textContent)).toEqual(['Hello, Ada!', 'مرحبا، Ada!'])
+		expect(screen.getAllByTestId('greeting').map(node => node.textContent)).toEqual(['Hello, Ada!', 'مرحبا، \u2068Ada\u2069!'])
 		expect(i18n.locale).toBe('en')
 	})
 
@@ -229,7 +229,7 @@ describe('locale prop', () => {
 		const i18n = createTestI18n()
 		const { rerender } = render(pinned(i18n, 'en'))
 		rerender(pinned(i18n, 'ar'))
-		expect(text('greeting')).toBe('مرحبا، Ada!')
+		expect(text('greeting')).toBe('مرحبا، \u2068Ada\u2069!')
 	})
 
 	it('re-renders when the active locale\'s translations are replaced', () => {

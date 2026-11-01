@@ -3,6 +3,7 @@ import { readdirSync, readFileSync, statSync } from 'node:fs'
 import { join, relative, resolve, sep } from 'node:path'
 import { keyOf, PLURAL_CATEGORIES } from '../message.js'
 import type { Message } from '../types.js'
+import { scanWithTypeScript, type FileScan, type TypeScript } from './ast.js'
 
 export interface ScanWarning {
 	file: string
@@ -30,7 +31,48 @@ export interface ScanOptions {
 	properties?: readonly string[] | undefined
 	/** Files and directories to leave out, relative to `cwd`. */
 	exclude?: readonly string[] | undefined
+	/** The project's TypeScript compiler (see `loadTypeScript`): files are parsed exactly, rather than matched. */
+	typescript?: TypeScript | undefined
+	/** Scans of files that haven't changed since, kept between runs. */
+	cache?: ScanCache | undefined
 }
+
+/** Scans kept by file, valid while the file's modification time and size are the same. */
+export interface ScanCache {
+	get(key: string, stamp: string): FileScan | undefined
+	set(key: string, stamp: string, scan: FileScan): void
+}
+
+// Imports as a regular expression finds them, when TypeScript isn't there to parse the file.
+const IMPORT = /(?:^|[^\w$.])(?:import\s+(?!type\s)(?:[^'"`;]*?\sfrom\s*)?|export\s+(?!type\s)[^'"`;]*?\sfrom\s*)['"]([^'"\n]+)['"]|(?:import|require)\s*\(\s*['"]([^'"\n]+)['"]\s*\)/g
+const CLIENT = /^(?:\s|\/\/[^\n]*\n|\/\*[\s\S]*?\*\/)*(['"])use client\1/
+
+/** One file's messages, warnings, imports and `'use client'`: parsed with TypeScript when there is one, matched otherwise. */
+export const scanFile = (path: string, cwd: string, options: ScanOptions = {}): FileScan => {
+	const file = relative(cwd, path)
+	const functions = options.functions ?? DEFAULT_FUNCTIONS
+	const properties = options.properties ?? []
+	const parsed = Boolean(options.typescript) && /\.[cm]?[jt]sx?$/.test(path)
+	const key = `${parsed ? 'ast' : 'regex'}\0${functions.join()}\0${properties.join()}\0${file}`
+	let stamp = ''
+	if (options.cache) {
+		const stat = statSync(path)
+		stamp = `${stat.mtimeMs}:${stat.size}`
+		const cached = options.cache.get(key, stamp)
+		if (cached) return cached
+	}
+	const source = readFileSync(path, 'utf8')
+	let scan: FileScan
+	if (parsed) scan = scanWithTypeScript(options.typescript!, source, file, functions, properties)
+	else {
+		const result = scanCode(source, functions, file, properties)
+		const code = source.replace(COMMENTS, comment => comment.replace(/[^\n]/g, ' '))
+		scan = { messages: [...result.messages], warnings: result.warnings, imports: [...code.matchAll(IMPORT)].map(match => (match[1] ?? match[2])!), client: CLIENT.test(source) }
+	}
+	options.cache?.set(key, stamp, scan)
+	return scan
+}
+
 
 // A string literal: quoted, or a template without `${}`.
 const LITERAL = /'(?:[^'\\\r\n]|\\[\s\S])*'|"(?:[^"\\\r\n]|\\[\s\S])*"|`(?:[^`\\$]|\\[\s\S]|\$(?!\{))*`/.source
@@ -154,7 +196,7 @@ export const scanFiles = (paths: readonly string[], cwd: string, options: ScanOp
 	const messages = new Map<string, Message>()
 	const warnings: ScanWarning[] = []
 	for (const file of files) {
-		const result = scanCode(readFileSync(file, 'utf8'), options.functions, relative(cwd, file), options.properties)
+		const result = scanFile(file, cwd, options)
 		for (const [key, message] of result.messages) {
 			if (typeof message !== 'string' || !messages.has(key)) messages.set(key, message)
 		}

@@ -1,0 +1,10 @@
+{
+  "Client Component": "m:2a2d52f9",
+  "Click me": "m:91ebc75c",
+  "Clicked {count} times": "m:b73a2d42",
+  "Language": "m:47f8e197",
+  "textlate + Next.js": "m:9ac3e934",
+  "Welcome to {site}": "m:c5f3a4a8",
+  "This page was rendered by a <b>Server Component</b>. Read the <docs>docs</docs>.": "m:c7dbbb86",
+  "{count} visits": "m:c4425865"
+}

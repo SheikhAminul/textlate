@@ -51,6 +51,9 @@ npx textlate translate    # finds the text above, translates only what's new, wr
 - **Detection** from the browser, `localStorage`, a cookie, the query string or `<html lang>`, with the user's choice remembered.
 - **RTL**: every scope knows its `dir`, and `<html lang dir>` is kept in sync for you.
 - **Guards**: a pseudo-locale (`textlate/pseudo`) and an ESLint rule (`textlate/eslint`) that catch text nobody translated.
+- **SEO** (`textlate/next`): canonical and hreflang links with `x-default`, Open Graph locales, sitemaps with each language's alternates and last change, half-translated pages kept out of the index, a proxy that never redirects a localized address, and a locale-keeping `Link`.
+- **Built for servers and browsers at scale**: a memory budget shared by every locale, unloading of idle locales, compiled catalogs under short keys, and each page's exact client messages, worked out from its imports.
+- **Right-to-left done right**: values inside Arabic, Hebrew, Persian and Urdu text are bidi-isolated, so names and numbers keep their punctuation in place; renamed language codes (`iw`, `no`, `in`…) match today's.
 
 ## Comparison
 
@@ -196,6 +199,7 @@ The `textlate` command keeps the translation files in sync with your code.
 | `textlate translate` | Runs `extract`, then translates every untranslated message with AI |
 | `textlate check` | Writes nothing. Fails if a file is out of date, untranslated, changed since translated, invalid, or (for `reviewed` locales) not reviewed. Use it in CI |
 | `textlate accept` | Marks the AI translations of the locales (all, or `--locales de`) as reviewed by a person |
+| `textlate compile` | Writes the compiled catalogs and each route's client messages from the files as they are, without AI: for a build step |
 | `textlate setup` | Asks which AI to translate with, and saves the answers |
 
 ```jsonc
@@ -327,6 +331,8 @@ export default defineConfig({
 | `carryOver` | `true` | When a message's text changes, start from the old text's translation and update it: see [Reviewing translations](#reviewing-translations) |
 | `glossary` | none | Terms to keep, explain or translate a set way: `{ TareAI: { keep: true }, workflow: { note: 'an automation', translations: { de: 'Workflow' } } }` |
 | `reviewed` | none | Locales whose translations must be reviewed by a person for `check` to pass, or `['*']` for all |
+| `compile` | none | `true`, or `{ dir, keys }`: write compiled catalogs for the browser — see [Compiled catalogs](#compiled-catalogs) |
+| `routes` | none | `{ app: 'app' }`: list each Next.js route's client messages — see [Each page's messages](#each-pages-messages) |
 | `ai.provider` | `'anthropic'` | `'anthropic'`, `'openai'` (and OpenAI-compatible APIs) or `'google'` (Gemini) |
 | `ai.model` | `'claude-opus-5-5'` for Anthropic | Required for the other providers |
 | `ai.apiKey` | from the environment | `ANTHROPIC_API_KEY`, `OPENAI_API_KEY` or `GEMINI_API_KEY`, also read from `.env` and `.env.local`. Prefer these to a key in a file you commit |
@@ -405,11 +411,23 @@ const { format } = useI18n() // or (await i18n.load('bn')).format
 format.number(0.25, { style: 'percent' })              // 25%
 format.date(new Date(), { dateStyle: 'long' })         // October 2, 2026
 format.relativeTime(-1, 'day', { numeric: 'auto' })    // yesterday
+format.relative(post.createdAt, { now })               // 5 minutes ago (the unit that fits)
 format.list(['a', 'b', 'c'])                           // a, b, and c
 format.displayName('bn', { type: 'language' })         // Bangla
 ```
 
 `Intl` instances are cached per locale and options.
+
+**Dates that hydrate.** A server and a browser can write the same date a little differently (engines disagree on which no-break space goes in "8:30 PM"; textlate always writes the same one), and "5 minutes ago" depends on when it's rendered. `<Time>` renders a date in the active locale and time zone and keeps the server's text through hydration; with `relative`, it starts from the server's `now` and keeps itself current:
+
+```tsx
+<I18nProvider i18n={i18n} locale={lang} timeZone={user.timeZone} now={Date.now()}>…</I18nProvider>
+
+<Time value={run.startedAt} format={{ dateStyle: 'medium', timeStyle: 'short' }} />
+<Time value={run.startedAt} relative />
+```
+
+**Right-to-left text.** In Arabic, Hebrew, Persian and Urdu, values are set apart with Unicode isolates, so `"{name} was saved."` with `Slack v2!` doesn't come out with its exclamation mark on the wrong side. `isolate: 'always'` does it in every locale (for right-to-left names in left-to-right text), `'never'` turns it off.
 
 ## Detection
 
@@ -492,9 +510,55 @@ export const SLACK = {
 
 Only values written out in full are extracted: `label: 'Hi ' + name`, a variable or a call is skipped, as it can't be translated as it is. Keep `properties` to the namespaces where those names hold text people read.
 
-### Catalogs of any size
+### Catalogs of any size, servers of any size
 
-Each message is resolved once per locale and served from a memo after that. Only text that has no translation counts towards the memo's limit, so a catalog of any size stays resolved: 20,000 messages read in no particular order run at about 2.6 million translations a second (see [Performance](#performance)). Each namespace is merged into one lookup table per locale as it loads.
+Each message is resolved once per locale and served from a memo after that, however large the catalog: 20,000 messages read in no particular order run at millions of translations a second (see [Performance](#performance)).
+
+On a server that renders many languages, memory stays bounded:
+- **One memory budget for every locale** (`memoLimit`, 50,000 resolved messages by default). When it fills, every locale's memo moves on a generation at once: messages used again are kept, and an idle locale lets go of what it had. 35 locales × 20,000 messages went from 436 MB to 130 MB — the catalogs themselves.
+- **Idle locales unload** with `maxLocales`: the least recently used beyond it are let go, and load again when a request asks for them. `i18n.unload(locale)` does it by hand. (A loader that `import()`s its files leaves them in the module cache; on a long-running server, a loader that reads them from disk frees them too.)
+
+### Compiled catalogs
+
+The browser needs neither the English text as keys nor the messages nobody translated yet. With `compile: true`, `textlate` writes compiled catalogs beside the others (`<dir>/.compiled`): only translated messages, each under a short hash of its text, a third smaller or more. `textlate compile` writes them from the files as they are, for a build step; `check` fails if they're stale.
+
+```js
+// textlate.config.js
+export default defineConfig({ namespaces: { … }, compile: true })
+```
+
+```ts
+export const i18n = createI18n({
+	locales: ['de', 'ja'],
+	keys: 'hashed',
+	loader: (locale, namespace) => import(`./locales/.compiled/${locale}/${namespace}.json`)
+})
+```
+
+### Each page's messages
+
+Server Components render their text on the server; only client components need translations in the browser. With `routes`, `textlate` follows each page's and layout's imports — relative paths, tsconfig `paths` like `@/components`, and workspace packages — and lists the messages of the client components (`'use client'`) under it, in `<dir>/.textlate/routes.json`:
+
+```js
+export default defineConfig({ namespaces: { … }, routes: { app: 'app' } })
+```
+
+```tsx
+import routes from '@/locales/.textlate/routes.json'
+
+// app/[lang]/layout.tsx: the layout's client messages, once
+const messages = await i18n.getMessages(lang, ['app'], { only: routes.layouts['/[lang]'] })
+
+// app/[lang]/integrations/[app]/page.tsx: the page's, added to them
+const messages = await i18n.getMessages(lang, ['app', 'catalog'], { only: routes.pages['/[lang]/integrations/[app]'] })
+return <I18nProvider i18n={i18n} locale={lang} messages={messages}>…</I18nProvider>
+```
+
+Routes are keyed as Next.js writes them (route groups and slots left out), and parts of a namespace sent by a layout and a page add up in the browser. A message a client component gets only through a server component's props (`<List items={labels} />`) isn't followed: translate it on the server, or import it in the client component.
+
+### Parsing with TypeScript
+
+With TypeScript 5 installed in the project, `textlate` parses files with it rather than matching them: aliases (`const t = translate`, `const { translate: t } = useI18n()`), member calls, comments and strings are what the parser says, and imports are read exactly. Scans of files that haven't changed are kept in `node_modules/.cache/textlate`, so a large codebase is read once, then only what changes. Without TypeScript (or with TypeScript 7, which has no JavaScript API yet), regular expressions do it, as before.
 
 ### Time zones
 
@@ -528,6 +592,79 @@ export default [
 ]
 ```
 
+## SEO
+
+Search engines need to know that `/de/pricing` and `/pricing` are the same page in two languages, which address is the page itself, and which languages are worth indexing. `textlate/routing` says how locales appear in addresses; `textlate/next` turns that into metadata, sitemaps and a proxy.
+
+```ts
+// src/i18n/routing.ts: safe to import anywhere, client components included
+import { defineRouting } from 'textlate/routing'
+
+export const routing = defineRouting({
+	locales: i18n.locales,
+	defaultLocale: 'en',
+	origin: 'https://tareai.com',
+	prefix: 'as-needed', // the default: /pricing, /de/pricing — addresses already indexed keep their place
+	hreflang: { 'zh-Hant': 'zh-TW' } // only where a locale's code isn't the hreflang you want
+})
+```
+
+```ts
+// src/i18n/seo.ts: server only
+import { createSeo } from 'textlate/next'
+import meta from '@/locales/.textlate/meta.json'
+
+export const seo = createSeo(routing, { meta, minCoverage: 0.9 })
+```
+
+**Metadata for every page**: its canonical address (itself, never another language's), hreflang links to every indexed language plus `x-default`, and Open Graph locales (`de_DE`, with the others as alternates):
+
+```ts
+// app/[lang]/integrations/[app]/page.tsx
+export const generateMetadata = async ({ params }: PageProps<'/[lang]/integrations/[app]'>): Promise<Metadata> => {
+	const { lang, app } = await params
+	const { translate } = await i18n.load(lang)
+	const page = seo.metadata(lang, `/integrations/${app}`, { namespaces: ['app', 'catalog'] })
+	const title = translate('{app} integrations', { app: name })
+	return { ...page, title, openGraph: { ...page.openGraph, title } }
+}
+```
+
+**Half-translated pages stay out of the index.** `textlate` writes each locale's coverage and last change to `<dir>/.textlate/meta.json`. A locale with less than `minCoverage` of a page's namespaces translated (or reviewed, with `reviewed: true`) is `noindex` there, and left out of every page's hreflang links and of the sitemap — so search engines never see a page that is mostly English, and you can launch a language before it's finished.
+
+**Sitemaps** list every page in every indexed language, each with the others as alternates, dated by the later of the page's change and its translations':
+
+```ts
+// app/sitemap.ts (split with generateSitemaps past 50,000 addresses)
+export default (): MetadataRoute.Sitemap => seo.sitemap(apps.map(app => ({ pathname: `/integrations/${app.slug}`, lastModified: app.updatedAt })))
+```
+
+**A proxy that never hides a page from crawlers**: an address with a locale is served as it is, whatever the visitor's language; with `as-needed`, an address without one is the default language's page (or a redirect for a visitor who chose another, kept per visitor), and `/en/…` redirects to `/…`, its one address; with `always`, `/…` redirects by the visitor's choice, then their browser.
+
+```ts
+// src/proxy.ts
+export const proxy = createProxy(routing)
+export const config = { matcher: ['/((?!_next|api|.*\\..*).*)'] }
+```
+
+**The locale anywhere on the server**, from a root parameter, without passing it down (and a 404 for an address whose locale isn't one):
+
+```ts
+import { lang } from 'next/root-params'
+export const getLocale = createGetLocale(routing, lang)
+```
+
+**Links that keep the locale**, and a language switcher that says which language it links to:
+
+```tsx
+// src/i18n/link.tsx
+'use client'
+export const Link = createLink(routing)
+
+<Link href="/integrations/slack">Slack</Link>          // /de/integrations/slack on a German page
+<Link href={pathname} locale="ja">日本語</Link>        // hrefLang="ja" lang="ja"
+```
+
 ## Next.js (App Router)
 
 A complete, working example is in [`examples/nextjs`](examples/nextjs): locale-prefixed routes, a proxy, Server and Client Components, static generation, and `npm run i18n`.
@@ -545,20 +682,11 @@ declare module 'textlate' {
 ```
 
 ```ts
-// src/proxy.ts (middleware.ts before Next 16): send `/` to the best locale
-import { negotiateLocale } from 'textlate'
-import { NextResponse, type NextRequest } from 'next/server'
-import { i18n } from './i18n'
+// src/proxy.ts (middleware.ts before Next 16): put each request on its locale (see SEO)
+import { createProxy } from 'textlate/next'
+import { routing } from './i18n'
 
-export const proxy = (request: NextRequest) => {
-	const { pathname } = request.nextUrl
-	if (i18n.locales.some(locale => pathname === `/${locale}` || pathname.startsWith(`/${locale}/`))) return
-	const locale = i18n.match(request.cookies.get('NEXT_LOCALE')?.value)
-		?? negotiateLocale(request.headers.get('accept-language'), i18n.locales, i18n.sourceLocale)
-	request.nextUrl.pathname = `/${locale}${pathname}`
-	return NextResponse.redirect(request.nextUrl)
-}
-
+export const proxy = createProxy(routing)
 export const config = { matcher: ['/((?!_next|api|.*\\..*).*)'] }
 ```
 
@@ -629,7 +757,7 @@ How it fits together:
 
 | Export | Description |
 |---|---|
-| `createI18n(config)` | Creates an instance. Config: `locales` (translations or loaders per locale, or a list of locales with `loader`), `loader?`, `namespaces?` (default `['default']`), `sourceLocale?` (default `'en'`), `locale?`, `fallbacks?` (e.g. `{ 'pt-BR': ['pt-PT'] }`), `detectors?`, `timeZone?`, `onUntranslated?` |
+| `createI18n(config)` | Creates an instance. Config: `locales` (translations or loaders per locale, or a list of locales with `loader`), `loader?`, `namespaces?` (default `['default']`), `sourceLocale?` (default `'en'`), `locale?`, `fallbacks?` (e.g. `{ 'pt-BR': ['pt-PT'] }`), `detectors?`, `timeZone?`, `keys?` (`'text'` or `'hashed'`), `memoLimit?` (50,000), `maxLocales?`, `isolate?` (`'rtl'`, `'always'` or `'never'`), `onUntranslated?` |
 | `msg(message)` | Marks a message chosen at runtime for the CLI, and returns it unchanged |
 | `negotiateLocale(acceptLanguage, locales, fallback)` | Best locale for an `Accept-Language` header |
 | `matchLocale(requested, locales)` | BCP 47 lookup: exact, then shorter tags, then same language |
@@ -639,7 +767,7 @@ How it fits together:
 
 **Scope** (one per locale and time zone): `{ locale, dir, timeZone, translate, format }`. `translate` and `format` are stable per scope, so they are safe in dependency arrays.
 
-**Instance:** the scope of the active locale (`translate`, `format`, `locale`, `dir`, `timeZone`), plus `sourceLocale`, `locales`, `namespaces`, `isReady`, `ready`, `setLocale()`, `detect()`, `match()`, `load(locale?, { namespaces?, timeZone? })` (a scope, once loaded), `isLoaded(locale?, namespaces?)`, `scope(locale, { timeZone? })` (a scope, as far as it is loaded), `getMessages(locale?, namespaces?)` and `addMessages(messages)` (translations by locale and namespace, from the server to the browser), `addTranslations(locale, translations, namespace?)`, `getTranslations(locale, namespace?)`, `clone({ locale?, timeZone? })`, `subscribe()`, `getSnapshot()`.
+**Instance:** the scope of the active locale (`translate`, `format`, `locale`, `dir`, `timeZone`), plus `sourceLocale`, `locales`, `namespaces`, `isReady`, `ready`, `setLocale()`, `detect()`, `match()`, `load(locale?, { namespaces?, timeZone? })` (a scope, once loaded), `isLoaded(locale?, namespaces?)`, `scope(locale, { timeZone? })` (a scope, as far as it is loaded), `getMessages(locale?, namespaces?, { only? })` and `addMessages(messages)` (translations by locale and namespace, from the server to the browser — all of them, or `only` the keys a route lists), `addTranslations(locale, translations, namespace?)`, `getTranslations(locale, namespace?)`, `unload(locale)`, `clone({ locale?, timeZone? })`, `subscribe()`, `getSnapshot()`.
 
 **`onUntranslated({ text, context, locale })`** is called once per message and locale that isn't translated yet. Return a string to show instead of the source text, or use it to log untranslated text.
 
@@ -647,9 +775,20 @@ How it fits together:
 
 | Export | Description |
 |---|---|
-| `<I18nProvider i18n locale? timeZone? messages? namespaces? detect? syncDocument?>` | Provides an instance. With `locale` (or `timeZone`), the subtree is pinned to it. `messages` come from `getMessages()` on the server; `namespaces` are loaded before the subtree renders. `detect` and `syncDocument` default to `true` |
+| `<I18nProvider i18n locale? timeZone? messages? namespaces? now? detect? syncDocument?>` | Provides an instance. With `locale` (or `timeZone`), the subtree is pinned to it. `messages` come from `getMessages()` on the server; `namespaces` are loaded before the subtree renders. `detect` and `syncDocument` default to `true` |
 | `useI18n()` | `{ translate, format, locale, dir, timeZone, locales, sourceLocale, setLocale, isPending, pendingLocale, i18n }` for the active locale |
 | `useNamespaces(namespaces)` | Loads namespaces a component needs besides the default ones, suspending until they're there |
+| `<Time value format? relative?>` | A date in the active locale and time zone that hydrates without mismatches; `relative` writes "5 minutes ago" from the provider's `now`, kept current |
+
+### `textlate/routing`, `textlate/next` and `textlate/next/link`
+
+| Export | Description |
+|---|---|
+| `defineRouting({ locales, defaultLocale, origin, prefix?, hreflang? })` | How locales appear in addresses: `localeOf`, `pathnameOf`, `path`, `url`, `hreflangOf`, `openGraphLocaleOf`. Safe anywhere |
+| `createSeo(routing, { meta?, minCoverage?, reviewed?, namespaces? })` | `metadata(locale, pathname, { namespaces?, locales? })`, `sitemap(entries)`, `indexed()`, `isIndexed()`, `coverage()` |
+| `createProxy(routing, { cookie? })` | A `proxy.ts` that puts requests on their locale without redirecting localized addresses |
+| `createGetLocale(routing, rootParam)` | The current route's locale from `next/root-params`, or a 404 |
+| `createLink(routing)` (`textlate/next/link`) | A Next.js `<Link>` that keeps the active locale, or links to another with `locale` |
 
 ### `textlate/pseudo` and `textlate/eslint`
 
@@ -661,7 +800,7 @@ How it fits together:
 
 ### `textlate/config` and the CLI
 
-`defineConfig(config)` type-checks `textlate.config.js`. The `textlate` command (`extract`, `translate`, `check`, `accept`, `setup`) is described in [Translating with AI](#translating-with-ai); `npx textlate --help` lists every option.
+`defineConfig(config)` type-checks `textlate.config.js`. The `textlate` command (`extract`, `translate`, `check`, `accept`, `compile`, `setup`) is described in [Translating with AI](#translating-with-ai); `npx textlate --help` lists every option.
 
 ## Performance
 
@@ -670,19 +809,20 @@ How it fits together:
 | Call | ops/sec |
 |---|---|
 | `translate('Plain text')` | ~15 M |
-| `translate({ text: 'Open', context: 'ticket status' })` | ~12 M |
-| `translate('Hello, {name}!', { name })` | ~8 M |
-| untranslated, shown in the source language | ~6 M |
-| fallback `es-MX → es` | ~5.5 M |
-| `translate('Total: {amount}', { amount: 1234.5 })` (number formatting) | ~5 M |
+| `translate({ text: 'Open', context: 'ticket status' })` | ~11 M |
+| `translate('Hello, {name}!', { name })` | ~7 M |
+| untranslated, shown in the source language | ~7 M |
+| fallback `es-MX → es` | ~6.5 M |
+| `translate('Total: {amount}', { amount: 1234.5 })` (number formatting) | ~6 M |
 | `translate({ one, other }, { count })` (plural) | ~4 M |
 | with a param, in a 20,000-message catalog read in random order | ~2.6 M |
 | plural with a count never seen before | ~0.6 M |
-| rich text with two elements | ~240 k |
+| rich text with two elements | ~230 k |
 
 Why it's fast:
 - Each message walks the fallback chain once per locale and is then a single `Map` lookup, keyed by the text itself. The memo is cleared only when translations change, or when untranslated text (which can come from anywhere) piles up — never because a catalog is large.
-- A locale's namespaces are merged into one lookup table as they load, so a lookup costs the same whatever the number of files.
+- A lookup runs once per message per locale, through the locale's few namespaces; after that the memo answers.
+- Memory has one budget for every locale: when it fills, memos move on a generation, keeping what's used again, so a server rendering 35 languages holds its hot messages and the catalogs — not every message it ever rendered.
 - Text without `{` or `<` is returned as-is, never parsed or copied. Parsed trees are shared across locales.
 - `Intl` calls cost hundreds of nanoseconds, so interpolated numbers and plural categories are remembered per locale. Counts repeat, so most plural calls skip `Intl` entirely.
 - Memory stays bounded on a long-running server, even when text, locales, options or numbers come from user input: every cache is capped.

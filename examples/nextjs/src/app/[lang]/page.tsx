@@ -1,11 +1,12 @@
 import Link from 'next/link'
+import { Time } from 'textlate/react'
 import { i18n } from '@/i18n'
 import { Counter } from './counter'
 import { LanguageSwitcher } from './language-switcher'
 
 const Home = async ({ params }: { params: Promise<{ lang: string }> }) => {
 	// Server Components have no context: load the route's locale and use its translate and format.
-	const { translate, format } = await i18n.load((await params).lang)
+	const { translate } = await i18n.load((await params).lang)
 
 	return (
 		<main style={{ fontFamily: 'system-ui', maxWidth: 640, margin: '4rem auto', lineHeight: 1.6 }}>
@@ -19,7 +20,7 @@ const Home = async ({ params }: { params: Promise<{ lang: string }> }) => {
 			</p>
 			<p>
 				{translate({ zero: 'No visits yet', one: '{count} visit', other: '{count} visits' }, { count: 1234 })} ·{' '}
-				{format.date(new Date(Date.UTC(2026, 9, 2)), { dateStyle: 'full', timeZone: 'UTC' })}
+				<Time value={new Date(Date.UTC(2026, 9, 2))} format={{ dateStyle: 'full', timeZone: 'UTC' }} />
 			</p>
 			<Counter />
 		</main>

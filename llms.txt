@@ -14,10 +14,13 @@ npm i textlate   (requires React 19+, ESM only; the CLI needs Node 20+)
 
 - `textlate`: server-safe core. `createI18n`, `msg`, `negotiateLocale`, `matchLocale`, `parseAcceptLanguage`, `getDirection`, and the detectors `navigatorDetector`, `storageDetector`, `cookieDetector`, `queryDetector` and `htmlLangDetector`. Usable in Server Components, `generateMetadata`, route handlers, `proxy.ts`/middleware and Node.
 - `textlate/react`: `'use client'`. `I18nProvider` (props `i18n`, `locale`, `timeZone`, `messages`, `namespaces`, `detect`, `syncDocument`), `useI18n`, `useNamespaces`.
+- `textlate/routing`: `defineRouting({ locales, defaultLocale, origin, prefix: 'as-needed' | 'always', hreflang? })` → `localeOf`, `pathnameOf`, `path`, `url`, `hreflangOf`, `openGraphLocaleOf`. Client-safe.
+- `textlate/next` (server): `createSeo(routing, { meta, minCoverage, reviewed?, namespaces? })` → `metadata(locale, pathname, { namespaces?, locales? })` (canonical self, hreflang + x-default, og:locale, noindex below coverage) and `sitemap(entries)` (alternates, per-locale lastModified); `createProxy(routing)` (never redirects localized addresses); `createGetLocale(routing, lang)` from `next/root-params`. `meta` is `<dir>/.textlate/meta.json`, written by the CLI.
+- `textlate/next/link` (client): `createLink(routing)` → `<Link href locale?>` keeping the active locale.
 - `textlate/pseudo`: `pseudoLocale(locale = 'en-XA')` → `{ locale, onUntranslated }`, and `pseudoLocalize(text)`.
 - `textlate/eslint`: ESLint plugin (default export) with rule `no-untranslated-text` and `configs.recommended`.
 - `textlate/config`: `defineConfig` for `textlate.config.js`.
-- `textlate` command: `extract`, `translate`, `check`, `accept`, `setup`.
+- `textlate` command: `extract`, `translate`, `check`, `accept`, `compile`, `setup`. Parses with the project's TypeScript 5 when installed; caches scans in `node_modules/.cache/textlate`.
 
 ## Setup (React)
 
@@ -61,7 +64,9 @@ const labels = { active: msg('Active') }; translate(labels[status])             
 - Untranslated text renders in the source language. `onUntranslated({ text, context, locale })` is called once per untranslated message and locale.
 - Fallback chain: `bn-BD` → `bn` → the text in the code.
 - Namespaces (large apps): `createI18n({ locales: ['de', 'es'], namespaces: ['app'], loader: (locale, namespace) => import(`./locales/${locale}/${namespace}.json`) })`. `await i18n.load(lang, { namespaces: ['catalog'], timeZone })` returns a request-isolated scope; `await i18n.getMessages(lang, ['app', 'catalog'])` → `<I18nProvider messages>` so the browser loads nothing; `useNamespaces(['catalog'])` loads more in the browser (suspends). A locale switch loads every namespace in use. One file per locale is the `default` namespace.
-- Time zones: `timeZone` on `createI18n`, `load`/`scope` options, `clone` or `<I18nProvider timeZone>`, so server and browser render the same dates.
+- Time zones: `timeZone` on `createI18n`, `load`/`scope` options, `clone` or `<I18nProvider timeZone>`, so server and browser render the same dates. `<Time value format? relative?>` hydrates without mismatches; `<I18nProvider now>` and `format.relative(date, { now })` for relative times.
+- Scale: `memoLimit` (50,000, one budget across locales), `maxLocales` + `unload(locale)` for servers, `keys: 'hashed'` for compiled catalogs (`compile: true` in the CLI config), `getMessages(lang, namespaces, { only: routes.pages['/[lang]/x'] })` with the CLI's `routes: { app }` manifest (`<dir>/.textlate/routes.json`) to send only a route's client messages.
+- Right-to-left: values are bidi-isolated (U+2068/U+2069) in RTL locales (`isolate: 'rtl' | 'always' | 'never'`). Renamed codes match: iw/he, in/id, no/nb, tl/fil, sh/sr-Latn, ji/yi, jw/jv, mo/ro.
 - Detection: `detectors` run after hydration; the first registered match wins. `setLocale` choices are saved by detectors with `persist` (storage, cookie); detected locales are not.
 
 ## CLI
