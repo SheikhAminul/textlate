@@ -3,7 +3,7 @@ import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, 
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { buildPrompt, limiter, translateMessages } from '../src/cli/ai.js'
+import { ApiError, buildPrompt, limiter, translateMessages } from '../src/cli/ai.js'
 import { checkTranslation } from '../src/cli/catalog.js'
 import { run } from '../src/cli/run.js'
 import { scanCode, scanFiles } from '../src/cli/scan.js'
@@ -157,6 +157,28 @@ describe('AI', () => {
 		expect(most).toBe(3)
 		expect(requests[0]!.previous).toEqual({ 1: { text: 'Text zero', translation: 'Texto cero' } })
 		expect(requests[1]!.previous).toBeUndefined()
+	})
+
+	it('stops sending batches after an API error, and reports it once those under way are saved', async () => {
+		let calls = 0
+		let saved = 0
+		const outcome = translateMessages({
+			sourceLocale: 'en',
+			locale: 'es',
+			messages: new Map(Array.from({ length: 10 }, (_, index) => [`Text ${index}`, `Text ${index}`])),
+			batchSize: 1,
+			limit: limiter(2),
+			provider: async request => {
+				const call = ++calls
+				await new Promise(done => setTimeout(done, call === 1 ? 1 : 10))
+				if (call === 1) throw new ApiError('api.anthropic.com answered 401: invalid x-api-key')
+				return Object.fromEntries(Object.entries(request.messages).map(([id, message]) => [id, `ES ${message as string}`]))
+			},
+			onTranslated: translations => void (saved += Object.keys(translations).length)
+		})
+		await expect(outcome).rejects.toThrow('answered 401')
+		// The batch already under way finished and was saved; the other eight were never sent.
+		expect([calls, saved]).toEqual([2, 1])
 	})
 
 	it('puts the glossary for the locale in the prompt, and checks terms to keep', () => {

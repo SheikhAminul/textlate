@@ -57,6 +57,21 @@ describe('memory', () => {
 		expect(onUntranslated.mock.calls.filter(([info]) => info.text === 'Hot')).toHaveLength(1)
 	})
 
+	it('keeps its memos when the same messages are added again, as a server does on every request', () => {
+		const onUntranslated = vi.fn()
+		const i18n = createI18n({ locales: ['es'], loader: () => Promise.resolve({}), onUntranslated })
+		const page = () => ({ es: { default: { Save: 'Guardar', File: { one: 'Archivo', other: 'Archivos' } } } })
+		i18n.addMessages(page())
+		const { translate } = i18n.scope('es')
+		translate('Untranslated')
+		i18n.addMessages(page())
+		translate('Untranslated')
+		expect(onUntranslated).toHaveBeenCalledTimes(1)
+		// Something new still comes through.
+		i18n.addMessages({ es: { default: { Save: 'Salvar' } } })
+		expect(translate('Save')).toBe('Salvar')
+	})
+
 	it('unloads the least recently used locales beyond maxLocales, and loads them again when asked', async () => {
 		const loader = vi.fn((locale: string) => Promise.resolve({ Save: `Save (${locale})` }))
 		const i18n = createI18n({ locales: ['es', 'de', 'fr'], loader, maxLocales: 2 })
@@ -217,6 +232,11 @@ describe('proxy', async () => {
 	it('with a prefix always, sends an address without one to the visitor\'s language', () => {
 		const response = always(request('https://tareai.com/pricing', { 'accept-language': 'ja,en;q=0.5' }))!
 		expect([response.status, response.headers.get('location'), response.headers.get('cache-control')]).toEqual([307, 'https://tareai.com/ja/pricing', 'private, no-store'])
+	})
+
+	it('never redirects to another site', () => {
+		expect(asNeeded(request('https://tareai.com/en//evil.com/x'))!.headers.get('location')).toBe('https://tareai.com/evil.com/x')
+		expect(asNeeded(request('https://tareai.com//evil.com/x', { cookie: 'NEXT_LOCALE=de' }))!.headers.get('location')).toBe('https://tareai.com/de/evil.com/x')
 	})
 
 	it('leaves files and API routes alone', () => {

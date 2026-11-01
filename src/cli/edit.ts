@@ -216,7 +216,7 @@ export const saveEnvKey = (cwd: string, name: string, value: string): EnvEdit =>
 	// Quote only when the value needs it, so keys stay easy to read.
 	const line = `${name}=${/^[\w./:+=~-]*$/.test(value) ? value : JSON.stringify(value)}`
 	const existing = new RegExp(`^[ \\t]*(?:export[ \\t]+)?${name}[ \\t]*=.*$`, 'm')
-	const text = existing.test(raw) ? raw.replace(existing, line) : `${raw}${raw && !raw.endsWith('\n') ? '\n' : ''}${line}\n`
+	const text = existing.test(raw) ? raw.replace(existing, () => line) : `${raw}${raw && !raw.endsWith('\n') ? '\n' : ''}${line}\n`
 	writeFileSync(path, text)
 	return { file, ignored: isIgnored(cwd, file) }
 }

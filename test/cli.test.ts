@@ -709,6 +709,12 @@ describe('config and .env files', () => {
 		expect(read('.env')).toBe('# keys\nANTHROPIC_API_KEY=new\nDATABASE_URL=x\nOPENAI_API_KEY=sk-1\n')
 	})
 
+	it('writes a key with $ in it as it is', () => {
+		write('.env', 'ANTHROPIC_API_KEY=old\n')
+		saveEnvKey(cwd, 'ANTHROPIC_API_KEY', "a$'b$&c")
+		expect(read('.env')).toBe('ANTHROPIC_API_KEY="a$\'b$&c"\n')
+	})
+
 	it('prefers .env.local, and reports whether git ignores it', () => {
 		write('.env.local', 'A=1\n')
 		write('.gitignore', 'node_modules\n.env*\n')

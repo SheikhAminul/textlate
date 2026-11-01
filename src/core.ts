@@ -215,6 +215,19 @@ const evict = (shared: Shared, keep: string) => {
 	}
 }
 
+/** Whether `existing` has every one of `translations` already, as it is (plural forms compared form by form). */
+const holds = (existing: Translations, translations: Translations) => {
+	for (const key in translations) {
+		const value = translations[key]
+		const current = Object.hasOwn(existing, key) ? existing[key] : undefined
+		if (value === current) continue
+		if (typeof value !== 'object' || typeof current !== 'object' || !value || !current) return false
+		const forms = Object.keys(value) as (keyof PluralTranslation)[]
+		if (forms.length !== Object.keys(current).length || forms.some(form => value[form] !== current[form])) return false
+	}
+	return true
+}
+
 /**
  * Put a namespace of a locale in memory: `load` (it finished loading: on screen at once) or `add` (sent from the server
  * while rendering: merged in quietly).
@@ -222,6 +235,9 @@ const evict = (shared: Shared, keep: string) => {
 const setTranslations = (shared: Shared, locale: string, namespace: string, translations: Translations, mode: 'load' | 'add') => {
 	const store = storeOf(shared, locale)
 	const existing = store.namespaces.get(namespace)
+	// A server renders the provider with the same messages request after request: nothing new, so nothing to copy, and
+	// every scope keeps its memo.
+	if (mode === 'add' && existing && holds(existing, translations)) return
 	// The server may send a page's messages a part at a time (a layout's, then a page's): parts add up.
 	store.namespaces.set(namespace, mode === 'add' && existing ? { ...existing, ...translations } : translations)
 	store.used = ++shared.clock

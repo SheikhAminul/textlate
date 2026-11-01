@@ -304,24 +304,31 @@ export const translateMessages = async (task: TranslateTask): Promise<TranslateO
 	const prompt = buildPrompt(task.sourceLocale, task.locale, task.instructions, task.glossary)
 	const outcome: TranslateOutcome = { translated: 0, failed: [] }
 	const limit = task.limit ?? limiter(1)
+	// An API error (a bad key, an exhausted quota) would fail every batch alike: once one has, the rest aren't sent.
+	let stopped: ApiError | undefined
 
 	const send = async (items: [string, Message][], retry: boolean): Promise<void> => {
 		const ids = new Map(items.map(([text, source], index) => [String(index + 1), { text, source }]))
 		const previous = Object.fromEntries([...ids].flatMap(([id, { text }]) => (task.previous?.has(text) ? [[id, task.previous.get(text)!]] : [])))
 		let answer: Record<string, unknown>
 		try {
-			answer = await limit(() =>
-				task.provider({
+			answer = await limit(async () => {
+				if (stopped) throw stopped
+				return task.provider({
 					sourceLocale: task.sourceLocale,
 					locale: task.locale,
 					pluralCategories: pluralCategories(task.locale),
 					messages: Object.fromEntries([...ids].map(([id, { source }]) => [id, source])),
 					...(Object.keys(previous).length && { previous }),
 					prompt
+				}).catch(error => {
+					// Noted before the slot passes to the next batch, so that one isn't sent.
+					if (error instanceof ApiError) stopped ??= error
+					throw error
 				})
-			)
+			})
 		} catch (error) {
-			if (error instanceof ApiError) throw error
+			if (error instanceof ApiError) return
 			if (error instanceof Truncated && items.length > 1) {
 				const half = Math.ceil(items.length / 2)
 				await send(items.slice(0, half), retry)
@@ -357,6 +364,8 @@ export const translateMessages = async (task: TranslateTask): Promise<TranslateO
 	const batches: [string, Message][][] = []
 	for (let start = 0; start < items.length; start += size) batches.push(items.slice(start, start + size))
 	// Every batch is under way at once; `limit` decides how many requests are actually in flight.
+	// Batches already under way finish (and are saved) before the error is reported, so nothing is written after the run ends.
 	await Promise.all(batches.map(batch => send(batch, false)))
+	if (stopped) throw stopped
 	return outcome
 }

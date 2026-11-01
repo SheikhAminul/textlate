@@ -60,7 +60,8 @@ export const defineRouting = <const L extends string>(config: RoutingConfig<L>):
 	const pathnameOf = (pathname: string) => {
 		const locale = localeOf(pathname)
 		const rest = locale ? pathname.slice(locale.length + 1) : pathname
-		return rest.startsWith('/') ? rest : `/${rest}`
+		// One leading slash: `//evil.com` (or `/\evil.com`) would be read as another site's address.
+		return `/${rest.replace(/^[/\\]+/, '')}`
 	}
 	const path = (locale: L, href: string) => {
 		const [pathname, rest] = split(href)
