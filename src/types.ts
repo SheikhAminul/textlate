@@ -252,10 +252,6 @@ export interface I18n<L extends string = string> extends Scope<L> {
 	 * messages, then a page's); a translation already in memory is replaced by the one added.
 	 */
 	addMessages(messages: Messages): void
-	/** Add or replace one namespace of a locale (default: the first default namespace). Replacing re-renders subscribers. */
-	addTranslations(locale: L, translations: Translations, namespace?: string): void
-	/** One loaded namespace of a locale (default: the first default namespace), if loaded. */
-	getTranslations(locale: L, namespace?: string): Translations | undefined
 	/** Let go of a locale's translations (and scopes); it loads again when asked for. See `maxLocales` to do it by itself. */
 	unload(locale: L): void
 

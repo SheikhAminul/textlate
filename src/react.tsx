@@ -1,8 +1,8 @@
 'use client'
 
 import { createContext, use, useEffect, useLayoutEffect, useMemo, useState, useSyncExternalStore, type ComponentProps, type ReactNode } from 'react'
-import type { RegisteredI18n, RegisteredLocale } from './index.js'
-import type { I18n, Messages, Translations } from './types.js'
+import type { RegisteredI18n } from './index.js'
+import type { I18n, Messages } from './types.js'
 
 const I18nContext = createContext<I18n | null>(null)
 I18nContext.displayName = 'I18nContext'
@@ -40,8 +40,6 @@ export interface I18nProviderProps {
 	timeZone?: string | undefined
 	/** Translations by locale and namespace, from `await i18n.getMessages(lang, namespaces)` on the server. */
 	messages?: Messages | undefined
-	/** One-file-per-locale translations already loaded elsewhere (e.g. on the server). Prefer `messages`. */
-	translations?: { readonly [L in RegisteredLocale]?: Translations } | undefined
 	/** Namespaces this subtree needs besides the default ones. It suspends until they're loaded. */
 	namespaces?: readonly string[] | undefined
 	/** The server's time when it rendered (e.g. `Date.now()` in the layout), so `<Time relative>` renders the same text in the browser. */
@@ -69,13 +67,8 @@ export interface I18nProviderProps {
  * <I18nProvider i18n={i18n} locale={lang} messages={messages}>{children}</I18nProvider>
  * ```
  */
-export const I18nProvider = ({ i18n, locale, timeZone, messages, translations, namespaces, now, detect = true, syncDocument = true, children }: I18nProviderProps) => {
+export const I18nProvider = ({ i18n, locale, timeZone, messages, namespaces, now, detect = true, syncDocument = true, children }: I18nProviderProps) => {
 	if (messages) i18n.addMessages(messages)
-	if (translations) {
-		for (const [key, value] of Object.entries(translations)) {
-			if (value && !i18n.getTranslations(key)) i18n.addTranslations(key, value)
-		}
-	}
 	const pinned = locale !== undefined || timeZone !== undefined
 	const instance = useMemo(() => (pinned ? i18n.clone({ ...(locale !== undefined && { locale }), timeZone }) : i18n), [i18n, pinned, locale, timeZone])
 	const { locale: active } = useSyncExternalStore(instance.subscribe, instance.getSnapshot, instance.getSnapshot)

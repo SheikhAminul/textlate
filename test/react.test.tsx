@@ -232,23 +232,11 @@ describe('locale prop', () => {
 		expect(text('greeting')).toBe('مرحبا، \u2068Ada\u2069!')
 	})
 
-	it('re-renders when the active locale\'s translations are replaced', () => {
-		const i18n = createTestI18n()
-		render(
-			<I18nProvider i18n={i18n} detect={false}>
-				<Greeting />
-			</I18nProvider>
-		)
-		expect(text('greeting')).toBe('Hello, Ada!')
-		act(() => i18n.addTranslations('en', { 'Hello, {name}!': 'Hi, {name}!' }))
-		expect(text('greeting')).toBe('Hi, Ada!')
-	})
-
 	it('uses translations passed from the server instead of loading them', () => {
 		const loader = vi.fn(() => Promise.resolve({ 'Hello, {name}!': 'loaded' }))
 		const i18n = createTestI18n({ bn: loader })
 		render(
-			<I18nProvider i18n={i18n} locale="bn" translations={{ bn: { 'Hello, {name}!': 'from server {name}' } }}>
+			<I18nProvider i18n={i18n} locale="bn" messages={{ bn: { default: { 'Hello, {name}!': 'from server {name}' } } }}>
 				<Greeting />
 			</I18nProvider>
 		)

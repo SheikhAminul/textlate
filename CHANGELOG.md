@@ -49,15 +49,16 @@ textlate 3 is built for large apps: tens of thousands of messages, dozens of lan
 
 ### Correctness
 
-- Bidi isolation: values in right-to-left locales are wrapped in Unicode isolates (`isolate: 'rtl' | 'always' | 'never'`).
+- Bidi isolation: values in right-to-left locales are wrapped in Unicode isolates.
 - Renamed language codes match today's, both ways: `iw`/`he`, `in`/`id`, `ji`/`yi`, `jw`/`jv`, `mo`/`ro`, `no`/`nb`, `tl`/`fil`, `sh`/`sr-Latn`.
 
 ### Upgrading from 1.x
 
-- **Right-to-left text now has invisible isolates around values** (U+2068 … U+2069). Tests that compare Arabic, Hebrew, Persian or Urdu strings need them, or `isolate: 'never'`.
+- **Right-to-left text now has invisible isolates around values** (U+2068 … U+2069). Tests that compare Arabic, Hebrew, Persian or Urdu strings need them.
 - **`addMessages` merges** into a namespace already in memory (a translation added replaces the one there), rather than skipping it.
 - **Formatted dates, numbers and lists write U+00A0 where `Intl` writes U+202F**, so servers and browsers agree.
 - **`ai.concurrency` now counts requests, not locales.** It was the number of locales translated at the same time (4); it's now the number of requests in flight across every locale (8). Lower it if your provider's rate limit is tight.
 - **Commit `<dir>/.textlate/`.** `extract` and `translate` now keep each translation's state there. Translations from before count as AI-made: if you require reviews (`reviewed`), run `textlate accept` for the locales already reviewed.
 - **Claude requests send the system prompt as a cached block** (`system: [{ type: 'text', text, cache_control }]`). An Anthropic-compatible proxy behind `ai.baseUrl` must accept that form, as the Claude API does.
+- **`addTranslations`, `getTranslations` and `<I18nProvider translations>` are gone**: use `addMessages`, `getMessages` and `<I18nProvider messages>`, which take translations by locale and namespace (`{ es: { default: { … } } }`).
 - **Types**: `Scope` has `timeZone`; `I18n` has `namespaces`, `isLoaded`, `getMessages` and `addMessages`; `load` and `scope` take options; `I18nConfig` takes a list of locales as well as an object. Code that only uses textlate is unaffected; code that implements these interfaces itself needs the new members.

@@ -58,21 +58,20 @@ const compiledFileOf = (project: Project, locale: string, namespace: string) =>
 	project.namespaced ? join(project.compile!.dir, locale, `${namespace}.json`) : join(project.compile!.dir, `${locale}.json`)
 
 /**
- * Each compiled file of a locale and what it should hold: only translated messages, keyed by their short hash (or their
- * text, with `keys: 'text'`) — what the browser loads, a third smaller or more than the catalog.
+ * Each compiled file of a locale and what it should hold: only translated messages, keyed by their short hash — what the
+ * browser loads, a third smaller or more than the catalog.
  */
 const compiledOf = (project: Project, scan: Scan, run: LocaleRun) => {
-	const hashed = project.compile!.keys === 'hashed'
 	const owners = new Map<string, string>()
 	return project.namespaces.map(({ name }) => {
 		const content = new Map<string, unknown>()
 		for (const key of scan.byNamespace.get(name) ?? []) {
 			const value = run.sync.values.get(key)
 			if (!isTranslated(value)) continue
-			const id = hashed ? hashKey(key) : key
+			const id = hashKey(key)
 			const owner = owners.get(id)
 			// 53 bits make this all but impossible; were it ever to happen, the build stops rather than mix two messages up.
-			if (owner !== undefined && owner !== key) throw new Error(`"${owner}" and "${key}" have the same short key: use keys: 'text' for compile.`)
+			if (owner !== undefined && owner !== key) throw new Error(`"${owner}" and "${key}" have the same short key: reword one of them.`)
 			owners.set(id, key)
 			content.set(id, value)
 		}

@@ -394,26 +394,25 @@ describe('instances', () => {
 
 	it('accepts translations added at runtime and unwraps module namespaces', async () => {
 		const i18n = createTestI18n({ bn: () => Promise.reject(new Error('should not load')) })
-		i18n.addTranslations('bn', { 'Plain text': 'added' })
-		expect(i18n.getTranslations('bn')).toEqual({ 'Plain text': 'added' })
+		i18n.addMessages({ bn: { default: { 'Plain text': 'added' } } })
+		expect(i18n.isLoaded('bn')).toBe(true)
 		expect((await i18n.load('bn')).translate('Plain text')).toBe('added')
 
 		const json = createTestI18n({ bn: () => import('./fixtures/bn.json') })
-		await json.load('bn')
-		expect(json.getTranslations('bn')).toHaveProperty('Plain text', 'সাধারণ লেখা')
+		expect((await json.getMessages('bn'))['bn']?.['default']).toHaveProperty('Plain text', 'সাধারণ লেখা')
 	})
 
 	it('keeps translations added while a loader is in flight', async () => {
 		const bn = deferred<unknown>()
 		const i18n = createTestI18n({ bn: () => bn.promise })
 		const loading = i18n.load('bn')
-		i18n.addTranslations('bn', { 'Plain text': 'added' })
+		i18n.addMessages({ bn: { default: { 'Plain text': 'added' } } })
 		bn.resolve({ default: { 'Plain text': 'loaded' } })
 		await loading
-		expect(i18n.getTranslations('bn')).toEqual({ 'Plain text': 'added' })
+		expect(i18n.scope('bn').translate('Plain text')).toBe('added')
 	})
 
-	it('notifies subscribers when loaded translations are replaced, not when a locale is added', () => {
+	it('notifies subscribers when translations finish loading, never when they are added while rendering', async () => {
 		const i18n = createTestI18n()
 		const clone = i18n.clone()
 		const listener = vi.fn()
@@ -421,22 +420,20 @@ describe('instances', () => {
 		const unsubscribe = i18n.subscribe(listener)
 		const unsubscribeClone = clone.subscribe(cloneListener)
 
-		i18n.addTranslations('bn', { 'Plain text': 'added' })
+		i18n.addMessages({ ar: { default: { 'Plain text': 'added' } } })
 		expect(listener).not.toHaveBeenCalled()
 
 		const before = i18n.getSnapshot()
-		i18n.addTranslations('en', { 'Plain text': 'Replaced' })
+		await i18n.load('bn')
 		expect(listener).toHaveBeenCalledOnce()
 		expect(cloneListener).toHaveBeenCalledOnce()
 		expect(i18n.getSnapshot()).not.toBe(before)
 		expect(i18n.getSnapshot()).toEqual(before)
-		expect(i18n.translate('Plain text')).toBe('Replaced')
 
 		unsubscribe()
 		unsubscribeClone()
-		i18n.addTranslations('en', { 'Plain text': 'Again' })
+		await i18n.load('bn-BD')
 		expect(listener).toHaveBeenCalledOnce()
-		expect(cloneListener).toHaveBeenCalledOnce()
 	})
 
 	it('never serves stale lookups after translations change', async () => {
@@ -448,9 +445,9 @@ describe('instances', () => {
 		await i18n.load('bn')
 		expect(bn.translate('Welcome')).toBe('স্বাগতম')
 
-		i18n.addTranslations('bn', { 'Only in Bangla': 'শুধু বাংলা' })
+		i18n.addMessages({ bn: { default: { 'Only in Bangla': 'শুধু বাংলা' } } })
 		expect(bn.translate('Only in Bangla')).toBe('শুধু বাংলা')
-		expect(bn.translate('Welcome')).toBe('Welcome')
+		expect(bn.translate('Welcome')).toBe('স্বাগতম')
 	})
 
 	it('formats with Intl for the active locale', async () => {

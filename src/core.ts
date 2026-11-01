@@ -85,12 +85,6 @@ export interface I18nConfig<Locales extends Record<string, TranslationSource> | 
 	 */
 	maxLocales?: number | undefined
 	/**
-	 * Set values apart from the text around them for the bidirectional algorithm (Unicode isolates), so a Latin name or a
-	 * number in Arabic or Hebrew text keeps its punctuation in place: in right-to-left locales (`'rtl'`, the default),
-	 * `'always'` (for right-to-left values, like Hebrew names, in left-to-right text too) or `'never'`.
-	 */
-	isolate?: 'rtl' | 'always' | 'never' | undefined
-	/**
 	 * Called once per message and locale that isn't translated yet, e.g. to log it. Return a string to show instead of
 	 * the source text (see `textlate/pseudo` for a pseudo-locale).
 	 */
@@ -222,12 +216,10 @@ const evict = (shared: Shared, keep: string) => {
 }
 
 /**
- * Put a namespace of a locale in memory: `load` (it finished loading: on screen at once), `add` (sent from the server
- * while rendering: merged in quietly) or `replace` (re-renders what shows it).
+ * Put a namespace of a locale in memory: `load` (it finished loading: on screen at once) or `add` (sent from the server
+ * while rendering: merged in quietly).
  */
-const setTranslations = (shared: Shared, locale: string, namespace: string, translations: Translations, mode: 'load' | 'add' | 'replace') => {
-	// Whatever was in memory before is on screen: so is the source text, which the source locale's translations override.
-	const replaced = has(shared, locale, namespace)
+const setTranslations = (shared: Shared, locale: string, namespace: string, translations: Translations, mode: 'load' | 'add') => {
 	const store = storeOf(shared, locale)
 	const existing = store.namespaces.get(namespace)
 	// The server may send a page's messages a part at a time (a layout's, then a page's): parts add up.
@@ -236,7 +228,7 @@ const setTranslations = (shared: Shared, locale: string, namespace: string, tran
 	shared.version++
 	// Translations added while rendering (as I18nProvider does with the server's) must not notify, or other components
 	// would update mid-render.
-	if (mode === 'load' || (mode === 'replace' && replaced)) for (const refresh of [...shared.subscribed]) refresh()
+	if (mode === 'load') for (const refresh of [...shared.subscribed]) refresh()
 	evict(shared, locale)
 }
 
@@ -365,7 +357,7 @@ const createScope = (shared: Shared, locale: string, timeZone: string | undefine
 	rotation.rotate = rotate
 	const dir = getDirection(locale)
 	// Values in right-to-left text are set apart, so their punctuation stays put; text the scope shows is what counts.
-	const isolated = config.isolate === 'always' || (config.isolate !== 'never' && dir === 'rtl')
+	const isolated = dir === 'rtl'
 
 	const translate = (message: Message, values?: Values) => {
 		const entry = resolve(message)
@@ -541,9 +533,7 @@ const createInstance = (shared: Shared, requested: string | undefined, timeZone:
 				}
 			}
 		},
-		addTranslations: (locale, translations, namespace = defaults[0]!) => setTranslations(shared, locale, namespace, translations, 'replace'),
 		unload: locale => unload(shared, locale),
-		getTranslations: (locale, namespace = defaults[0]!) => shared.stores.get(locale)?.namespaces.get(namespace),
 		clone: options => createInstance(shared, options?.locale ?? snapshot.locale, options && 'timeZone' in options ? options.timeZone : timeZone),
 		subscribe: listener => {
 			listeners.add(listener)

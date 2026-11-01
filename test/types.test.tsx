@@ -106,7 +106,7 @@ describe('types', () => {
 			)
 		}
 		const App = () => (
-			<I18nProvider i18n={i18n} translations={{ bn: { Welcome: 'স্বাগতম' } }}>
+			<I18nProvider i18n={i18n} messages={{ bn: { default: { Welcome: 'স্বাগতম' } } }}>
 				<Component />
 			</I18nProvider>
 		)

@@ -37,11 +37,6 @@ describe('bidi isolation', () => {
 		expect(i18n.translate('{name} was saved.', { name: 'Slack' })).toBe('Slack was saved.')
 		expect(renderToStaticMarkup(<>{i18n.scope('he').translate('Read <b>{name}</b>', { b: <b /> , name: 'Slack' })}</>)).toBe(`קרא <b>${FSI}Slack${PDI}</b>`)
 	})
-
-	it('can isolate always, or never', () => {
-		expect(createI18n({ locales: {}, isolate: 'always' }).translate('{name} was saved.', { name: 'שלום' })).toBe(`${FSI}שלום${PDI} was saved.`)
-		expect(createI18n({ locales: { he }, isolate: 'never' }).scope('he').translate('{name} was saved.', { name: 'Slack' })).toBe('Slack נשמר.')
-	})
 })
 
 describe('memory', () => {
@@ -68,8 +63,8 @@ describe('memory', () => {
 		await i18n.load('es')
 		await i18n.load('de')
 		await i18n.load('fr')
-		expect(i18n.getTranslations('es')).toBeUndefined()
-		expect(i18n.getTranslations('fr')).toEqual({ Save: 'Save (fr)' })
+		expect(i18n.isLoaded('es')).toBe(false)
+		expect(i18n.isLoaded('fr')).toBe(true)
 		expect((await i18n.load('es')).translate('Save')).toBe('Save (es)')
 		expect(loader.mock.calls.map(([locale]) => locale)).toEqual(['es', 'de', 'fr', 'es'])
 		i18n.unload('es')

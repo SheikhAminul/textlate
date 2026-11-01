@@ -100,7 +100,7 @@ describe('namespaces', () => {
 	it('keeps an app with one file per locale working, with `default` as its namespace', async () => {
 		const i18n = createI18n({ locales: { es: { Save: 'Guardar' }, de: () => Promise.resolve({ default: { Save: 'Speichern' } }) } })
 		expect(i18n.namespaces).toEqual(['default'])
-		expect(i18n.getTranslations('es')).toEqual({ Save: 'Guardar' })
+		expect(await i18n.getMessages('es')).toEqual({ es: { default: { Save: 'Guardar' } } })
 		expect(await i18n.getMessages('de')).toEqual({ de: { default: { Save: 'Speichern' } } })
 	})
 

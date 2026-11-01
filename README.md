@@ -331,7 +331,7 @@ export default defineConfig({
 | `carryOver` | `true` | When a message's text changes, start from the old text's translation and update it: see [Reviewing translations](#reviewing-translations) |
 | `glossary` | none | Terms to keep, explain or translate a set way: `{ TareAI: { keep: true }, workflow: { note: 'an automation', translations: { de: 'Workflow' } } }` |
 | `reviewed` | none | Locales whose translations must be reviewed by a person for `check` to pass, or `['*']` for all |
-| `compile` | none | `true`, or `{ dir, keys }`: write compiled catalogs for the browser — see [Compiled catalogs](#compiled-catalogs) |
+| `compile` | none | `true`, or `{ dir }`: write compiled catalogs for the browser — see [Compiled catalogs](#compiled-catalogs) |
 | `routes` | none | `{ app: 'app' }`: list each Next.js route's client messages — see [Each page's messages](#each-pages-messages) |
 | `ai.provider` | `'anthropic'` | `'anthropic'`, `'openai'` (and OpenAI-compatible APIs) or `'google'` (Gemini) |
 | `ai.model` | `'claude-opus-5-5'` for Anthropic | Required for the other providers |
@@ -427,7 +427,7 @@ format.displayName('bn', { type: 'language' })         // Bangla
 <Time value={run.startedAt} relative />
 ```
 
-**Right-to-left text.** In Arabic, Hebrew, Persian and Urdu, values are set apart with Unicode isolates, so `"{name} was saved."` with `Slack v2!` doesn't come out with its exclamation mark on the wrong side. `isolate: 'always'` does it in every locale (for right-to-left names in left-to-right text), `'never'` turns it off.
+**Right-to-left text.** In Arabic, Hebrew, Persian and Urdu, values are set apart with Unicode isolates, so `"{name} was saved."` with `Slack v2!` doesn't come out with its exclamation mark on the wrong side.
 
 ## Detection
 
@@ -757,7 +757,7 @@ How it fits together:
 
 | Export | Description |
 |---|---|
-| `createI18n(config)` | Creates an instance. Config: `locales` (translations or loaders per locale, or a list of locales with `loader`), `loader?`, `namespaces?` (default `['default']`), `sourceLocale?` (default `'en'`), `locale?`, `fallbacks?` (e.g. `{ 'pt-BR': ['pt-PT'] }`), `detectors?`, `timeZone?`, `keys?` (`'text'` or `'hashed'`), `memoLimit?` (50,000), `maxLocales?`, `isolate?` (`'rtl'`, `'always'` or `'never'`), `onUntranslated?` |
+| `createI18n(config)` | Creates an instance. Config: `locales` (translations or loaders per locale, or a list of locales with `loader`), `loader?`, `namespaces?` (default `['default']`), `sourceLocale?` (default `'en'`), `locale?`, `fallbacks?` (e.g. `{ 'pt-BR': ['pt-PT'] }`), `detectors?`, `timeZone?`, `keys?` (`'hashed'` for compiled catalogs), `memoLimit?` (50,000), `maxLocales?`, `onUntranslated?` |
 | `msg(message)` | Marks a message chosen at runtime for the CLI, and returns it unchanged |
 | `negotiateLocale(acceptLanguage, locales, fallback)` | Best locale for an `Accept-Language` header |
 | `matchLocale(requested, locales)` | BCP 47 lookup: exact, then shorter tags, then same language |
@@ -767,7 +767,7 @@ How it fits together:
 
 **Scope** (one per locale and time zone): `{ locale, dir, timeZone, translate, format }`. `translate` and `format` are stable per scope, so they are safe in dependency arrays.
 
-**Instance:** the scope of the active locale (`translate`, `format`, `locale`, `dir`, `timeZone`), plus `sourceLocale`, `locales`, `namespaces`, `isReady`, `ready`, `setLocale()`, `detect()`, `match()`, `load(locale?, { namespaces?, timeZone? })` (a scope, once loaded), `isLoaded(locale?, namespaces?)`, `scope(locale, { timeZone? })` (a scope, as far as it is loaded), `getMessages(locale?, namespaces?, { only? })` and `addMessages(messages)` (translations by locale and namespace, from the server to the browser — all of them, or `only` the keys a route lists), `addTranslations(locale, translations, namespace?)`, `getTranslations(locale, namespace?)`, `unload(locale)`, `clone({ locale?, timeZone? })`, `subscribe()`, `getSnapshot()`.
+**Instance:** the scope of the active locale (`translate`, `format`, `locale`, `dir`, `timeZone`), plus `sourceLocale`, `locales`, `namespaces`, `isReady`, `ready`, `setLocale()`, `detect()`, `match()`, `load(locale?, { namespaces?, timeZone? })` (a scope, once loaded), `isLoaded(locale?, namespaces?)`, `scope(locale, { timeZone? })` (a scope, as far as it is loaded), `getMessages(locale?, namespaces?, { only? })` and `addMessages(messages)` (translations by locale and namespace, from the server to the browser — all of them, or `only` the keys a route lists), `unload(locale)`, `clone({ locale?, timeZone? })`, `subscribe()`, `getSnapshot()`.
 
 **`onUntranslated({ text, context, locale })`** is called once per message and locale that isn't translated yet. Return a string to show instead of the source text, or use it to log untranslated text.
 

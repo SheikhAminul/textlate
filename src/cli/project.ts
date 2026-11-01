@@ -38,7 +38,7 @@ export interface Project {
 	/** Whether a locale's translations must be reviewed for `check` to pass. */
 	reviewed: (locale: string) => boolean
 	/** Where compiled catalogs go, and how they're keyed. */
-	compile: { dir: string; keys: 'hashed' | 'text' } | undefined
+	compile: { dir: string } | undefined
 	/** The Next.js app directories to list each route's client messages for. */
 	routes: { app: string[] } | undefined
 	/** The project-wide functions, for files in no namespace. */
@@ -121,10 +121,7 @@ export const resolveProject = (cwd: string, config: Config, options: ProjectOpti
 		glossary: config.glossary,
 		reviewed: locale => reviewed.has('*') || reviewed.has(locale),
 		compile: config.compile
-			? {
-					dir: resolve(cwd, (typeof config.compile === 'object' && config.compile.dir) || join(dir, '.compiled')),
-					keys: (typeof config.compile === 'object' && config.compile.keys) || 'hashed'
-				}
+			? { dir: resolve(cwd, (typeof config.compile === 'object' && config.compile.dir) || join(dir, '.compiled')) }
 			: undefined,
 		routes: config.routes ? { app: typeof config.routes.app === 'string' ? [config.routes.app] : [...config.routes.app] } : undefined,
 		functions: options.functions ?? config.functions
