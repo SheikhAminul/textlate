@@ -19,8 +19,7 @@ import {
 	writeRun,
 	type LocaleRun,
 	type Project,
-	type Review,
-	type Scan
+	type Review
 } from './project.js'
 import { Cancelled, createPrompter, isInteractive, type Prompter } from './prompt.js'
 import { missingAISettings, setupAI, setupHint } from './setup.js'
@@ -215,7 +214,7 @@ export const run = async (args: readonly string[], options: RunOptions = {}): Pr
 		const total = scan.messages.size
 		const runs = project.locales.map(locale => openLocale(project, scan, locale))
 		const check = (locale: string) => (source: Parameters<typeof checkTranslation>[0], value: unknown) => checkTranslation(source, value, locale, project.glossary)
-		const reviewOf = (localeRun: LocaleRun) => reviewRun(project, scan, localeRun, check(localeRun.locale))
+		const reviewOf = (localeRun: LocaleRun) => reviewRun(scan, localeRun, check(localeRun.locale))
 		const where = (localeRun: LocaleRun) =>
 			project.namespaced ? `${relative(cwd, join(project.dir, localeRun.locale)) || localeRun.locale}/` : relative(cwd, localeRun.files[0]!.file.path)
 

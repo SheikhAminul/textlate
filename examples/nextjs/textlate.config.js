@@ -4,5 +4,6 @@ import { defineConfig } from 'textlate/config'
 export default defineConfig({
 	sourceLocale: 'en',
 	locales: ['bn', 'ar'],
-	ai: { instructions: 'A demo page for a JavaScript library. Keep "textlate" and "Next.js" untranslated.' }
+	glossary: { textlate: { keep: true }, 'Next.js': { keep: true } },
+	ai: { instructions: 'A demo page for a JavaScript library.' }
 })

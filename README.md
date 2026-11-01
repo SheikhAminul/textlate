@@ -7,7 +7,7 @@ textlate
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](https://github.com/SheikhAminul/textlate/blob/main/LICENSE)
 
 **Write your text in your code. Translate it with AI in one command.**
-textlate is i18n without keys for **React 19** and **Next.js App Router**. It is about 3 kB with zero dependencies, fully type-safe, works in Server Components, and translates 5–60× faster than react-i18next, react-intl and next-intl in [reproducible benchmarks](#comparison).
+textlate is i18n without keys for **React 19** and **Next.js App Router**, built to scale from a landing page to an app with tens of thousands of messages in dozens of languages. It is about 4 kB with zero dependencies, fully type-safe, works in Server Components, and translates 4–60× faster than react-i18next, react-intl and next-intl in [reproducible benchmarks](#comparison).
 
 ```tsx
 const { translate } = useI18n()
@@ -26,43 +26,51 @@ npx textlate translate    # finds the text above, translates only what's new, wr
 
 - **No keys.** You never invent `home.hero.title`, keep a key file in sync, or look up what a key says. The text in your code is the message, and the language you write in needs no file at all.
 - **Context where text is ambiguous.** "Open" on a button and "Open" as a ticket status are different words in most languages. `{ text: 'Open', context: 'ticket status' }` keeps them apart, and tells the translator (or the AI) what the text means.
-- **AI translation that doesn't waste tokens.** `textlate translate` sends only text that isn't translated yet, saves after every batch, and checks every answer: placeholders, tags and plural forms must match the source. Use Claude, OpenAI, Gemini, any OpenAI-compatible API (OpenRouter, Groq, Mistral, a local Ollama), or your own function.
+- **AI translation that doesn't waste tokens.** `textlate translate` sends only text that isn't translated yet, many requests at once, saves after every batch, and checks every answer: placeholders, tags and plural forms must match the source. Use Claude, OpenAI, Gemini, any OpenAI-compatible API (OpenRouter, Groq, Mistral, a local Ollama), or your own function.
+- **Built for large apps.** Split translations into namespaces that load per page, extract text kept in data (`label: 'Send a message'`), and look up a 20,000-message catalog millions of times a second.
+- **A review workflow.** Each translation is AI-made, reviewed or changed. A person's edit counts as a review, `textlate check` can require one before you deploy, and when your text changes its old translation is carried over and updated instead of thrown away.
 - **One function.** `translate` returns a string, or React nodes when you pass elements. The types know which, and they read params and tags from the text: `translate('Welcome back, {name}!')` without `name` fails the build.
 - **Small and fast.** No plugins, no runtime dependencies, no build step, no message compiler. Built on `Intl`, `useSyncExternalStore`, React 19 `use()` and Server Components.
 
 ## Features
 
 - **Source text as messages**, with plurals and context written in place, and `msg()` for text chosen at runtime.
-- **AI translation CLI**: `extract`, `translate` and `check` (a gate for CI before you deploy). The first run asks which provider, model and key to use, and saves them.
+- **AI translation CLI**: `extract`, `translate`, `check` (a gate for CI before you deploy) and `accept`. The first run asks which provider, model and key to use, and saves them.
+- **Namespaces**: `<dir>/<locale>/<namespace>.json`, each with its part of the code, loaded as pages need them and handed from the server to the browser with `getMessages()`.
+- **Text in data**: `properties: ['label', 'description']` extracts the strings of your catalogs, menus and forms.
+- **Review state** for every translation, a `reviewed` gate for CI, and **carry-over** of translations when their text changes.
+- **Glossary**: terms kept as they are, explained, or translated a set way per language, and checked where they must be kept.
 - **Type-safe** params, plural `count` and rich-text tags, read from the text itself.
-- **Small**: about 3 kB for the core and 0.5 kB for the React bindings (minified and brotli-compressed). No dependencies.
-- **Fast**: each message resolves once per locale and is then served from a memo. Plain text is never parsed, and components re-render only when the locale changes.
+- **Small**: about 3.8 kB for the core and 0.7 kB for the React bindings (minified and brotli-compressed). No dependencies.
+- **Fast at any size**: each message resolves once per locale and is then served from a memo, however large the catalog. Plain text is never parsed, and components re-render only when the locale or its translations change.
 - **Plurals** use `Intl.PluralRules`, so `zero`/`one`/`two`/`few`/`many`/`other` work in every language.
-- **Formatting** of numbers, dates, relative times, lists and language names uses `Intl` for the locale.
+- **Formatting** of numbers, dates, relative times, lists and language names uses `Intl` for the locale, with an optional **time zone** so the server and the browser show the same dates.
 - **Rich text** like `Read the <link>terms</link>` renders to React elements. There's no `dangerouslySetInnerHTML`.
 - **Lazy locales**: `() => import('./locales/bn.json')` is code-split, and the current language stays on screen while the new one loads.
 - **Fallbacks**: `bn-BD`, then `bn`, then the text in your code.
 - **Detection** from the browser, `localStorage`, a cookie, the query string or `<html lang>`, with the user's choice remembered.
 - **RTL**: every scope knows its `dir`, and `<html lang dir>` is kept in sync for you.
+- **Guards**: a pseudo-locale (`textlate/pseudo`) and an ESLint rule (`textlate/eslint`) that catch text nobody translated.
 
 ## Comparison
 
 Each library translated the same three messages into Spanish with the same tooling, and each produced identical output. Reproduce with [`bench/compare`](bench/compare): `npm i && npm run size && npm run speed`.
 
-| | textlate 1 | react-i18next 17 + i18next 26 | react-intl 12 | next-intl 4 | Lingui 6 |
+| | textlate 3 | react-i18next 17 + i18next 26 | react-intl 12 | next-intl 4 | Lingui 6 |
 |---|---|---|---|---|---|
-| **Bundle**: provider, hook and rich text (min + brotli) | **3.2 kB** | 18.2 kB | 12.5 kB | 10.1 kB | 3.4 kB¹ |
+| **Bundle**: provider, hook and rich text (min + brotli) | 4.0 kB | 18.2 kB | 12.5 kB | 10.1 kB | **3.4 kB**¹ |
 | **Direct dependencies** | **0** | 3 | 3 | 10 | 3 |
-| **Plain text** (ops/sec) | **16 M** | 0.28 M | 1.2 M | 3.2 M | – |
-| **With a param** | **7.7 M** | 0.28 M | 0.86 M | 0.29 M | – |
-| **Plural** | **8.7 M** | 0.14 M | 0.26 M | 0.15 M | – |
+| **Plain text** (ops/sec) | **14.8 M** | 0.32 M | 0.85 M | 2.35 M | – |
+| **With a param** | **8.3 M** | 0.24 M | 0.55 M | 0.22 M | – |
+| **Plural** | **4.1 M** | 0.13 M | 0.20 M | 0.13 M | – |
 | Messages written in the code, no keys | ✓ | via config | via `defaultMessage` | – | ✓¹ |
 | AI translation built in | ✓ | via other tools | via other tools | via other tools | via other tools |
+| Review state, carried over when text changes | ✓ | via other tools | via other tools | via other tools | via other tools |
 | Server Components | ✓ | ✓ | ✓ | ✓ | ✓ |
 | Works without a build step | ✓ | ✓ | ✓ | ✓ | –¹ |
 | Full ICU MessageFormat (`select`, ordinals) | – | via plugin | ✓ | ✓ | ✓ |
 
-<sub>Measured with Node 24, size-limit 14 and tinybench 6. Speed is a single-thread microbenchmark, so absolute numbers vary by machine but the ratios are stable. ¹Lingui compiles messages at build time with its CLI or a macro, which keeps its runtime small; it was left out of the speed test because it needs that compile step. Dependencies are the direct dependencies of the packages you install, not counting each other or peers.</sub>
+<sub>Measured with Node 22, size-limit 14 and tinybench 6. Speed is a single-thread microbenchmark, so absolute numbers vary by machine but the ratios are stable. ¹Lingui compiles messages at build time with its CLI or a macro, which keeps its runtime small; it was left out of the speed test because it needs that compile step. Dependencies are the direct dependencies of the packages you install, not counting each other or peers.</sub>
 
 ### When to choose something else
 
@@ -186,7 +194,8 @@ The `textlate` command keeps the translation files in sync with your code.
 |---|---|
 | `textlate extract` | Finds the messages in your code and updates `src/locales/<locale>.json`: new text is added untranslated (`""`), text no longer in the code is removed, and translations are kept |
 | `textlate translate` | Runs `extract`, then translates every untranslated message with AI |
-| `textlate check` | Writes nothing. Fails if a file is out of date, untranslated or invalid. Use it in CI |
+| `textlate check` | Writes nothing. Fails if a file is out of date, untranslated, changed since translated, invalid, or (for `reviewed` locales) not reviewed. Use it in CI |
+| `textlate accept` | Marks the AI translations of the locales (all, or `--locales de`) as reviewed by a person |
 | `textlate setup` | Asks which AI to translate with, and saves the answers |
 
 ```jsonc
@@ -290,13 +299,16 @@ import { defineConfig } from 'textlate/config'
 
 export default defineConfig({
 	sourceLocale: 'en', // the language of the text in your code (default 'en')
-	locales: ['es', 'bn', 'ar'], // default: every <locale>.json in `dir`
+	locales: ['es', 'bn', 'ar'], // default: every locale with files in `dir`
 	dir: 'src/locales', // default
 	include: ['src'], // where to look for messages (default)
+	exclude: ['src/test'], // files and directories to leave out
+	glossary: { Pocket: { keep: true } },
+	reviewed: ['de', 'ja'], // check fails until a person has reviewed these
 	ai: {
 		provider: 'anthropic', // default; or 'openai', 'google'
 		model: 'claude-opus-5-5', // default for anthropic
-		instructions: 'A banking app for small businesses. Use a formal tone. Keep "Pocket" untranslated.'
+		instructions: 'A banking app for small businesses. Use a formal tone.'
 	}
 })
 ```
@@ -304,32 +316,54 @@ export default defineConfig({
 | Option | Default | |
 |---|---|---|
 | `sourceLocale` | `'en'` | The language the text in your code is written in |
-| `locales` | each `<locale>.json` in `dir` | The locales to translate into |
-| `dir` | `'src/locales'` | Where the `<locale>.json` files live |
+| `locales` | each locale with files in `dir` | The locales to translate into |
+| `dir` | `'src/locales'` | Where the translation files live: `<dir>/<locale>.json`, or `<dir>/<locale>/<namespace>.json` with namespaces |
 | `include` | `['src']` | Files and directories to scan. `node_modules`, build output and dot-directories are skipped. Scans `.js`, `.jsx`, `.ts`, `.tsx`, `.mjs`, `.cjs`, `.mts`, `.cts`, `.vue`, `.svelte` and `.astro` files |
+| `exclude` | none | Files and directories under `include` to leave out, e.g. tests and fixtures |
 | `functions` | `['translate', 'msg']` | Functions whose first argument is a message |
+| `properties` | none | Object properties whose string values are messages, e.g. `['label', 'description']`: see [Text in data](#text-in-data) |
+| `namespaces` | none | Files per namespace, each with its own `include` (and `exclude`, `functions`, `properties`): see [Namespaces](#namespaces) |
 | `keepUnused` | `false` | Keep translations of text that is no longer in the code |
+| `carryOver` | `true` | When a message's text changes, start from the old text's translation and update it: see [Reviewing translations](#reviewing-translations) |
+| `glossary` | none | Terms to keep, explain or translate a set way: `{ TareAI: { keep: true }, workflow: { note: 'an automation', translations: { de: 'Workflow' } } }` |
+| `reviewed` | none | Locales whose translations must be reviewed by a person for `check` to pass, or `['*']` for all |
 | `ai.provider` | `'anthropic'` | `'anthropic'`, `'openai'` (and OpenAI-compatible APIs) or `'google'` (Gemini) |
 | `ai.model` | `'claude-opus-5-5'` for Anthropic | Required for the other providers |
 | `ai.apiKey` | from the environment | `ANTHROPIC_API_KEY`, `OPENAI_API_KEY` or `GEMINI_API_KEY`, also read from `.env` and `.env.local`. Prefer these to a key in a file you commit |
 | `ai.baseUrl` | the provider's | For example `'https://openrouter.ai/api/v1'`, or `'http://localhost:11434/v1'` for Ollama (no key needed) |
-| `ai.instructions` | none | What the product is, the tone, and terms to keep or translate a certain way |
+| `ai.instructions` | none | What the product is, the tone, and anything else the translator should know |
 | `ai.batchSize` | `40` | Messages per request |
-| `ai.concurrency` | `4` | Locales translated at the same time |
+| `ai.concurrency` | `8` | Requests sent at the same time, across every locale |
 | `ai.body` | none | Extra request fields, e.g. `{ temperature: 0 }` or `{ output_config: { effort: 'low' } }` |
-| `ai.translate` | none | Your own function, for any other SDK or service. It receives the messages by id (with their context), the locale, its plural categories and the prompt, and returns translations by id |
+| `ai.translate` | none | Your own function, for any other SDK or service. It receives the messages by id (with their context, and the previous translation of changed text), the locale, its plural categories and the prompt, and returns translations by id |
 
-Command-line flags override the config: `--locales es,bn`, `--dir`, `--source`, `--provider`, `--model`, `--keep-unused`, `--config <file>`, `--dry-run` (shows what `translate` would send, without calling the AI or writing files), `--no-input` (never ask questions) and `--no-color` (plain output). Paths after the command replace `include`: `textlate translate app components`.
+Command-line flags override the config: `--locales es,bn`, `--dir`, `--source`, `--functions`, `--properties`, `--reviewed`, `--provider`, `--model`, `--keep-unused`, `--config <file>`, `--dry-run` (shows what `translate` would send, without calling the AI or writing files), `--no-input` (never ask questions) and `--no-color` (plain output). Paths after the command replace `include`: `textlate translate app components`.
 
 ### How translation works
 
-- **Only untranslated text is sent.** A message is untranslated when its value is `""`, or a plural form is empty. Everything else, including translations you edited by hand, is left alone. Changing a text in your code makes it a new message, so it is translated again.
+- **Only what needs it is sent**: messages not translated yet (`""`, or an empty plural form), and messages whose text changed since they were translated. Everything else, including translations you edited by hand, is left alone.
+- **Many requests at once.** Every batch of every locale shares one pool of requests (`ai.concurrency`, 8 by default), so a large catalog keeps them all busy. With Claude, the system prompt is cached, so every batch after a locale's first pays a tenth for it.
 - **Context goes along.** The model is told what each message's context means, so "Open" as a status and "Open" on a button get different words.
-- **Progress is saved after every batch.** If a run stops halfway, the next run continues where it left off.
-- **Every answer is checked.** A translation must not be empty, must keep the source's `{params}` and `<tags>`, and a plural must have every form the language needs. An invalid translation is sent once more, then reported and left untranslated.
+- **The glossary goes along**, for the locale being translated: terms to keep as they are, what terms mean, and how they're translated. A kept term missing from an answer makes it invalid.
+- **Progress is saved after every batch**, and every file is written whole (to a file beside it, then renamed), so a run that stops halfway loses nothing and leaves no half-written file. The next run continues where it left off.
+- **Every answer is checked.** A translation must not be empty, must keep the source's `{params}`, `<tags>` and kept terms, and a plural must have every form the language needs. An invalid translation is sent once more, then reported and left untranslated.
 - **Answers are structured.** With Anthropic, the request uses structured outputs, so the model can only answer in the expected JSON shape. The default model also uses server-side refusal fallbacks (`fallbacks: "default"`): if a safety classifier declines a batch, the API retries it on another model instead of failing.
 - **Errors are handled.** Rate limits, overload and network errors are retried with backoff, honouring `retry-after`. A batch cut off at the output limit is split in two.
-- **`check` and `extract` validate hand-written translations too**, and list any whose params, tags or plural forms don't match the source.
+- **`check` and `extract` validate hand-written translations too**, and list any whose params, tags, plural forms or kept terms don't match the source.
+
+### Reviewing translations
+
+textlate keeps track of where each translation stands, in `<dir>/.textlate/<locale>.json` (commit it; it never reaches a bundle):
+
+| State | Means | Becomes |
+|---|---|---|
+| AI | Written by `textlate translate`, or there before textlate kept track | **Reviewed** when a person edits it, or `textlate accept` marks it |
+| Reviewed | A person wrote, edited or accepted it | Stays reviewed: `translate` never touches it |
+| Changed | Its text changed in the code since it was translated | **AI** once `translate` updates it |
+
+- **A person's edit is a review.** Edit a translation in the JSON (or in your translation tool) and it counts as reviewed: textlate notices the file no longer holds what it wrote.
+- **Require reviews where they matter.** With `reviewed: ['de', 'ja']`, `textlate check` fails while those locales have AI translations nobody reviewed. A reviewer goes through them, fixes what needs fixing, and runs `textlate accept --locales de` for the rest.
+- **Changed text keeps its translation.** Fix a typo or reword a sentence, and the old text's translation stands in for the new one (when the two are alike), marked changed: `translate` sends it with the old text and translation, so the model changes no more than the change calls for, and reviewed wording survives. `check` fails until it's updated. Set `carryOver: false` to translate changed text afresh.
 
 ### Translation files
 
@@ -347,16 +381,20 @@ A translation file maps each message to its translation, in the order the messag
 
 A plural is stored under its `other` text, and a message with context under `text // context`. An empty string (or empty plural form) means "not translated yet": the text in your code is shown instead. You can translate by hand, with AI, or both.
 
+With [namespaces](#namespaces), each locale has a folder with a file per namespace: `src/locales/es/app.json`, `src/locales/es/catalog.json`. A message used in two namespaces is in both files and translated once.
+
 ## Switching and loading locales
 
 ```ts
 await i18n.setLocale('bn')        // or ['bn-BD', 'en']: the best match wins
 i18n.match('pt-BR')               // 'pt', if that's what you registered
 const { translate, format, dir } = await i18n.load('ar')   // load without switching
+const scope = await i18n.load('ar', { namespaces: ['app', 'emails'], timeZone: 'Asia/Dubai' })
 ```
 
 - When the target locale is lazy, the current locale stays on screen while it loads. `useI18n().isPending` and `pendingLocale` tell you a switch is in progress.
-- If several calls overlap, the last one wins. Each locale loads only once.
+- A switch loads every namespace the current locale has loaded, so nothing on screen falls back to the source text.
+- If several calls overlap, the last one wins. Each file loads only once.
 - If the initial locale is lazy, `<I18nProvider>` suspends until it's ready, so wrap it in `<Suspense>`.
 - Load errors reject `setLocale` and go to your error boundary on first render.
 
@@ -387,6 +425,108 @@ format.displayName('bn', { type: 'language' })         // Bangla
 | `{ detect, persist? }` | anything you like |
 
 In a client-only app, call `await i18n.detect()` before the first render to skip the source-locale frame.
+
+## Large apps
+
+textlate is built to stay fast and manageable with tens of thousands of messages, dozens of languages and a team of reviewers.
+
+### Namespaces
+
+Split the translations into a file per namespace, each with the messages of its own part of the code, so a page loads only what it shows:
+
+```js
+// textlate.config.js
+export default defineConfig({
+	dir: 'src/locales',
+	locales: ['de', 'es', 'ja', 'pt-BR'],
+	namespaces: {
+		app: { include: ['app', 'components', 'lib'], exclude: ['lib/test'] },
+		catalog: { include: ['packages/catalog/src'], properties: ['label', 'description'] },
+		emails: { include: ['emails'] }
+	}
+})
+```
+
+`textlate extract` writes `src/locales/<locale>/<namespace>.json`. Load them with one `loader`, which bundlers code-split into a chunk per file:
+
+```ts
+// src/i18n.ts
+export const i18n = createI18n({
+	locales: ['de', 'es', 'ja', 'pt-BR'],
+	namespaces: ['app'], // loaded everywhere; the others only where they're asked for
+	loader: (locale, namespace) => import(`./locales/${locale}/${namespace}.json`)
+})
+```
+
+```tsx
+// On the server: load what the page needs, and hand it to the browser with the page.
+const messages = await i18n.getMessages(lang, ['app', 'catalog'])
+return <I18nProvider i18n={i18n} locale={lang} messages={messages}>{children}</I18nProvider>
+
+// In the browser: a component that needs another namespace loads it (and suspends until it's there).
+const AppPicker = () => {
+	useNamespaces(['catalog'])
+	const { translate } = useI18n()
+	return apps.map(app => <li key={app.id}>{translate(app.label)}</li>)
+}
+
+// In a route handler or an email: everything for one request, shared with nothing else.
+const { translate } = await i18n.load(user.locale, { namespaces: ['emails'], timeZone: user.timeZone })
+```
+
+A message used in two namespaces is in both files and translated once; a translation can come from whichever namespace is loaded. An app with one file per locale is a project with a single `default` namespace, and works as before.
+
+### Text in data
+
+Text kept in data — a catalog of integrations, a menu, form fields — is translated where it's shown, `translate(app.label)`, and extracted where it's written. `properties` names the object properties whose string values are messages:
+
+```ts
+// packages/catalog/src/slack.ts: with properties: ['label', 'description']
+export const SLACK = {
+	id: 'slack', // not extracted
+	label: 'Slack',
+	description: 'Sends messages to channels and reads them.',
+	actions: [{ id: 'send', label: 'Send a message' }]
+}
+```
+
+Only values written out in full are extracted: `label: 'Hi ' + name`, a variable or a call is skipped, as it can't be translated as it is. Keep `properties` to the namespaces where those names hold text people read.
+
+### Catalogs of any size
+
+Each message is resolved once per locale and served from a memo after that. Only text that has no translation counts towards the memo's limit, so a catalog of any size stays resolved: 20,000 messages read in no particular order run at about 2.6 million translations a second (see [Performance](#performance)). Each namespace is merged into one lookup table per locale as it loads.
+
+### Time zones
+
+Dates in messages and `format.date` use the runtime's time zone unless you set one, so a server in UTC and a browser in Tokyo would render different dates. Set `timeZone` on the instance, on a scope (`load(lang, { timeZone })`, `scope(lang, { timeZone })`) or on the provider (`<I18nProvider timeZone={user.timeZone}>`).
+
+### Catching untranslated text
+
+**A pseudo-locale** shows every untranslated message accented, a third longer and in brackets, so hard-coded text and layouts that break with longer words stand out:
+
+```ts
+import { pseudoLocale } from 'textlate/pseudo'
+
+const pseudo = pseudoLocale('en-XA')
+export const i18n = createI18n({
+	locales: { es: () => import('./locales/es.json'), [pseudo.locale]: {} },
+	onUntranslated: pseudo.onUntranslated
+})
+// translate('Save {count} files', { count: 3 }) in en-XA: '[Šáṽé 3 ƒíļéš ~~~~]'
+```
+
+**An ESLint rule** reports text written plainly in JSX — between tags, and in `alt`, `aria-label`, `placeholder`, `title` and the like:
+
+```js
+// eslint.config.js
+import textlate from 'textlate/eslint'
+
+export default [
+	textlate.configs.recommended,
+	// or with options: more attributes, elements to skip, text that's fine as it is
+	{ rules: { 'textlate/no-untranslated-text': ['error', { attributes: ['label'], allow: ['TareAI', '/^v\\d+/'] }] } }
+]
+```
 
 ## Next.js (App Router)
 
@@ -425,11 +565,12 @@ export const config = { matcher: ['/((?!_next|api|.*\\..*).*)'] }
 ```tsx
 // src/app/[lang]/providers.tsx: the instance can't cross the server/client boundary, so import it here
 'use client'
+import type { Messages } from 'textlate'
 import { I18nProvider } from 'textlate/react'
 import { i18n } from '@/i18n'
 
-export const Providers = ({ locale, children }: { locale: string; children: React.ReactNode }) => (
-	<I18nProvider i18n={i18n} locale={locale}>{children}</I18nProvider>
+export const Providers = ({ locale, messages, children }: { locale: string; messages: Messages; children: React.ReactNode }) => (
+	<I18nProvider i18n={i18n} locale={locale} messages={messages}>{children}</I18nProvider>
 )
 ```
 
@@ -449,9 +590,11 @@ export const generateMetadata = async ({ params }: { params: Promise<{ lang: str
 const RootLayout = async ({ children, params }: { children: React.ReactNode; params: Promise<{ lang: string }> }) => {
 	const { lang } = await params
 	if (i18n.match(lang) !== lang) notFound()
+	// The page's translations go to the browser with it: it renders at once, and loads nothing more.
+	const messages = await i18n.getMessages(lang)
 	return (
 		<html lang={lang} dir={i18n.scope(lang).dir}>
-			<body><Providers locale={lang}>{children}</Providers></body>
+			<body><Providers locale={lang} messages={messages}>{children}</Providers></body>
 		</html>
 	)
 }
@@ -475,9 +618,10 @@ export default Page
 How it fits together:
 - **`textlate`** is server-safe and imports no client hooks, so you can use it in Server Components, `generateMetadata`, route handlers and the proxy.
 - **`textlate/react`** is marked `'use client'`.
-- **`await i18n.load(locale)`** loads a locale and returns its `{ translate, format, dir, locale }` without touching any shared state. Concurrent requests can't leak into each other.
+- **`await i18n.load(locale)`** loads a locale and returns its `{ translate, format, dir, locale, timeZone }` without touching any shared state. Concurrent requests can't leak into each other.
 - **`<I18nProvider locale>`** gives its subtree a private copy of the instance pinned to that locale, while loaded translations stay shared. To change the language in Client Components, navigate to the other locale's URL.
-- **To avoid a client fetch for translations**, pass them from the server: `<I18nProvider locale={lang} translations={{ [lang]: translations }}>`.
+- **`await i18n.getMessages(locale, namespaces?)`** hands the browser exactly the translations the page uses, through `<I18nProvider messages>`, so it never fetches them again.
+- **Without a URL prefix** (a signed-in app whose language is a user setting), read the locale from the user or a cookie on the server and pass it as `locale`; a change of setting re-renders with the new one.
 
 ## API
 
@@ -485,7 +629,7 @@ How it fits together:
 
 | Export | Description |
 |---|---|
-| `createI18n(config)` | Creates an instance. Config: `locales`, `sourceLocale?` (default `'en'`), `locale?`, `fallbacks?` (e.g. `{ 'pt-BR': ['pt-PT'] }`), `detectors?`, `onUntranslated?` |
+| `createI18n(config)` | Creates an instance. Config: `locales` (translations or loaders per locale, or a list of locales with `loader`), `loader?`, `namespaces?` (default `['default']`), `sourceLocale?` (default `'en'`), `locale?`, `fallbacks?` (e.g. `{ 'pt-BR': ['pt-PT'] }`), `detectors?`, `timeZone?`, `onUntranslated?` |
 | `msg(message)` | Marks a message chosen at runtime for the CLI, and returns it unchanged |
 | `negotiateLocale(acceptLanguage, locales, fallback)` | Best locale for an `Accept-Language` header |
 | `matchLocale(requested, locales)` | BCP 47 lookup: exact, then shorter tags, then same language |
@@ -493,9 +637,9 @@ How it fits together:
 | `getDirection(locale)` | `'ltr'` or `'rtl'` |
 | detectors | `navigatorDetector`, `storageDetector`, `cookieDetector`, `queryDetector`, `htmlLangDetector` |
 
-**Scope** (one per locale): `{ locale, dir, translate, format }`. `translate` and `format` are stable per locale, so they are safe in dependency arrays.
+**Scope** (one per locale and time zone): `{ locale, dir, timeZone, translate, format }`. `translate` and `format` are stable per scope, so they are safe in dependency arrays.
 
-**Instance:** the scope of the active locale (`translate`, `format`, `locale`, `dir`), plus `sourceLocale`, `locales`, `isReady`, `ready`, `setLocale()`, `detect()`, `match()`, `load(locale?)` (a scope, once loaded), `scope(locale)` (a scope, as far as it is loaded), `addTranslations()`, `getTranslations()`, `clone()`, `subscribe()`, `getSnapshot()`.
+**Instance:** the scope of the active locale (`translate`, `format`, `locale`, `dir`, `timeZone`), plus `sourceLocale`, `locales`, `namespaces`, `isReady`, `ready`, `setLocale()`, `detect()`, `match()`, `load(locale?, { namespaces?, timeZone? })` (a scope, once loaded), `isLoaded(locale?, namespaces?)`, `scope(locale, { timeZone? })` (a scope, as far as it is loaded), `getMessages(locale?, namespaces?)` and `addMessages(messages)` (translations by locale and namespace, from the server to the browser), `addTranslations(locale, translations, namespace?)`, `getTranslations(locale, namespace?)`, `clone({ locale?, timeZone? })`, `subscribe()`, `getSnapshot()`.
 
 **`onUntranslated({ text, context, locale })`** is called once per message and locale that isn't translated yet. Return a string to show instead of the source text, or use it to log untranslated text.
 
@@ -503,35 +647,46 @@ How it fits together:
 
 | Export | Description |
 |---|---|
-| `<I18nProvider i18n locale? translations? detect? syncDocument?>` | Provides an instance. With `locale`, the subtree is pinned to that locale. `detect` and `syncDocument` default to `true` |
-| `useI18n()` | `{ translate, format, locale, dir, locales, sourceLocale, setLocale, isPending, pendingLocale, i18n }` for the active locale |
+| `<I18nProvider i18n locale? timeZone? messages? namespaces? detect? syncDocument?>` | Provides an instance. With `locale` (or `timeZone`), the subtree is pinned to it. `messages` come from `getMessages()` on the server; `namespaces` are loaded before the subtree renders. `detect` and `syncDocument` default to `true` |
+| `useI18n()` | `{ translate, format, locale, dir, timeZone, locales, sourceLocale, setLocale, isPending, pendingLocale, i18n }` for the active locale |
+| `useNamespaces(namespaces)` | Loads namespaces a component needs besides the default ones, suspending until they're there |
+
+### `textlate/pseudo` and `textlate/eslint`
+
+| Export | Description |
+|---|---|
+| `pseudoLocale(locale = 'en-XA')` | `{ locale, onUntranslated }` for `createI18n`: a pseudo-locale for finding untranslated text |
+| `pseudoLocalize(text)` | Text as the pseudo-locale shows it, with params and tags kept |
+| `textlate/eslint` (default) | The ESLint plugin: rule `no-untranslated-text` with options `attributes`, `ignoreElements` and `allow`, and `configs.recommended` |
 
 ### `textlate/config` and the CLI
 
-`defineConfig(config)` type-checks `textlate.config.js`. The `textlate` command (`extract`, `translate`, `check`, `setup`) is described in [Translating with AI](#translating-with-ai); `npx textlate --help` lists every option.
+`defineConfig(config)` type-checks `textlate.config.js`. The `textlate` command (`extract`, `translate`, `check`, `accept`, `setup`) is described in [Translating with AI](#translating-with-ai); `npx textlate --help` lists every option.
 
 ## Performance
 
-`npm run bench` on Node 24, translating into Spanish (ops/sec; higher is better):
+`npm run bench` on Node 22, translating into Spanish (ops/sec; higher is better):
 
 | Call | ops/sec |
 |---|---|
 | `translate('Plain text')` | ~15 M |
-| `translate({ text: 'Open', context: 'ticket status' })` | ~13 M |
-| `translate('Hello, {name}!', { name })` | ~10 M |
-| `translate('Total: {amount}', { amount: 1234.5 })` (number formatting) | ~9 M |
-| untranslated, shown in the source language | ~9 M |
-| fallback `es-MX → es` | ~8 M |
-| `translate({ one, other }, { count })` (plural) | ~7 M |
-| plural with a count never seen before | ~0.7 M |
-| rich text with two elements | ~290 k |
+| `translate({ text: 'Open', context: 'ticket status' })` | ~12 M |
+| `translate('Hello, {name}!', { name })` | ~8 M |
+| untranslated, shown in the source language | ~6 M |
+| fallback `es-MX → es` | ~5.5 M |
+| `translate('Total: {amount}', { amount: 1234.5 })` (number formatting) | ~5 M |
+| `translate({ one, other }, { count })` (plural) | ~4 M |
+| with a param, in a 20,000-message catalog read in random order | ~2.6 M |
+| plural with a count never seen before | ~0.6 M |
+| rich text with two elements | ~240 k |
 
 Why it's fast:
-- Each message walks the fallback chain once per locale and is then a single `Map` lookup, keyed by the text itself. The memo is cleared only when translations change.
+- Each message walks the fallback chain once per locale and is then a single `Map` lookup, keyed by the text itself. The memo is cleared only when translations change, or when untranslated text (which can come from anywhere) piles up — never because a catalog is large.
+- A locale's namespaces are merged into one lookup table as they load, so a lookup costs the same whatever the number of files.
 - Text without `{` or `<` is returned as-is, never parsed or copied. Parsed trees are shared across locales.
 - `Intl` calls cost hundreds of nanoseconds, so interpolated numbers and plural categories are remembered per locale. Counts repeat, so most plural calls skip `Intl` entirely.
 - Memory stays bounded on a long-running server, even when text, locales, options or numbers come from user input: every cache is capped.
-- The store lives outside React and is read with `useSyncExternalStore`. The context value never changes, so components re-render only when the locale does, not when a parent re-renders.
+- The store lives outside React and is read with `useSyncExternalStore`. The context value never changes, so components re-render only when the locale or its translations do, not when a parent re-renders.
 
 ## Contributing
 

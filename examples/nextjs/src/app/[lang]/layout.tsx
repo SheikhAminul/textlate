@@ -18,11 +18,15 @@ const RootLayout = async ({ children, params }: Props) => {
 	const { lang } = await params
 	const locale = i18n.match(lang)
 	if (locale !== lang) notFound()
+	// The page's translations go to the browser with it, so it renders at once and loads nothing more.
+	const messages = await i18n.getMessages(locale)
 
 	return (
 		<html lang={locale} dir={i18n.scope(locale).dir}>
 			<body>
-				<Providers locale={locale}>{children}</Providers>
+				<Providers locale={locale} messages={messages}>
+					{children}
+				</Providers>
 			</body>
 		</html>
 	)

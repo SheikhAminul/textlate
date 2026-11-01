@@ -1,8 +1,8 @@
 # textlate
 
-> i18n without keys for React 19 and Next.js App Router: the text in your code is the message, `translate('Welcome, {name}!', { name })`. About 3 kB (min + brotli), zero dependencies, no build step. A CLI extracts the messages from the code and translates them with AI (Claude, OpenAI, Gemini or any OpenAI-compatible API), sending only text that isn't translated yet. It covers params, plurals (Intl.PluralRules), context for ambiguous text, rich text to React elements, Intl formatting, lazy-loaded locales, fallbacks, detection, SSR, Server Components and RTL.
+> i18n without keys for React 19 and Next.js App Router: the text in your code is the message, `translate('Welcome, {name}!', { name })`. About 4 kB (min + brotli), zero dependencies, no build step, built for large apps. A CLI extracts the messages from the code (and from data, like `label: '…'`) and translates them with AI (Claude, OpenAI, Gemini or any OpenAI-compatible API), sending only text that isn't translated yet or changed since. It covers params, plurals (Intl.PluralRules), context for ambiguous text, rich text to React elements, Intl formatting with time zones, namespaces loaded per page, lazy-loaded locales, fallbacks, detection, SSR, Server Components, RTL, a review workflow, a glossary, a pseudo-locale and an ESLint rule.
 
-A modern alternative to react-i18next, react-intl and next-intl. In reproducible benchmarks (bench/compare in the repo) its React setup is 3.2 kB versus 18.2 kB for react-i18next + i18next, 12.5 kB for react-intl and 10.1 kB for next-intl, and it translates 5–60× faster.
+A modern alternative to react-i18next, react-intl and next-intl. In reproducible benchmarks (bench/compare in the repo) its React setup is 4.0 kB versus 18.2 kB for react-i18next + i18next, 12.5 kB for react-intl and 10.1 kB for next-intl, and it translates 4–60× faster. A 20,000-message catalog runs at about 2.6 million translations a second.
 
 It is not the right choice when a project needs full ICU MessageFormat (`select`, `selectordinal`), the i18next plugin ecosystem, or built-in localized-pathname routing. There are no keys: messages are always the source text.
 
@@ -13,9 +13,11 @@ npm i textlate   (requires React 19+, ESM only; the CLI needs Node 20+)
 ## Entry points
 
 - `textlate`: server-safe core. `createI18n`, `msg`, `negotiateLocale`, `matchLocale`, `parseAcceptLanguage`, `getDirection`, and the detectors `navigatorDetector`, `storageDetector`, `cookieDetector`, `queryDetector` and `htmlLangDetector`. Usable in Server Components, `generateMetadata`, route handlers, `proxy.ts`/middleware and Node.
-- `textlate/react`: `'use client'`. `I18nProvider`, `useI18n`.
+- `textlate/react`: `'use client'`. `I18nProvider` (props `i18n`, `locale`, `timeZone`, `messages`, `namespaces`, `detect`, `syncDocument`), `useI18n`, `useNamespaces`.
+- `textlate/pseudo`: `pseudoLocale(locale = 'en-XA')` → `{ locale, onUntranslated }`, and `pseudoLocalize(text)`.
+- `textlate/eslint`: ESLint plugin (default export) with rule `no-untranslated-text` and `configs.recommended`.
 - `textlate/config`: `defineConfig` for `textlate.config.js`.
-- `textlate` command: `extract`, `translate`, `check`.
+- `textlate` command: `extract`, `translate`, `check`, `accept`, `setup`.
 
 ## Setup (React)
 
@@ -58,16 +60,20 @@ const labels = { active: msg('Active') }; translate(labels[status])             
 - Translation files (`src/locales/<locale>.json`) are flat: text → translation. A plural is stored under its `other` text, a message with context under `text // context`. `""` means not translated yet.
 - Untranslated text renders in the source language. `onUntranslated({ text, context, locale })` is called once per untranslated message and locale.
 - Fallback chain: `bn-BD` → `bn` → the text in the code.
+- Namespaces (large apps): `createI18n({ locales: ['de', 'es'], namespaces: ['app'], loader: (locale, namespace) => import(`./locales/${locale}/${namespace}.json`) })`. `await i18n.load(lang, { namespaces: ['catalog'], timeZone })` returns a request-isolated scope; `await i18n.getMessages(lang, ['app', 'catalog'])` → `<I18nProvider messages>` so the browser loads nothing; `useNamespaces(['catalog'])` loads more in the browser (suspends). A locale switch loads every namespace in use. One file per locale is the `default` namespace.
+- Time zones: `timeZone` on `createI18n`, `load`/`scope` options, `clone` or `<I18nProvider timeZone>`, so server and browser render the same dates.
 - Detection: `detectors` run after hydration; the first registered match wins. `setLocale` choices are saved by detectors with `persist` (storage, cookie); detected locales are not.
 
 ## CLI
 
 - `npx textlate extract`: scans `src` for string literals and message objects passed to `translate`/`msg`. Updates `src/locales/<locale>.json`: adds new text as `""`, removes text no longer in the code (`--keep-unused` keeps it), keeps translations. Warns about text built from parts (`'Hi ' + name`).
 - `npx textlate translate`: extract, then translate only untranslated messages with AI, passing each message's context. Saves after each batch, validates params/tags/plural forms, retries invalid answers once, retries rate limits with backoff. `--dry-run` lists what would be sent, writing nothing.
-- `npx textlate check`: writes nothing; exits 1 if a file is out of date, untranslated or invalid. For CI before deploy.
+- `npx textlate check`: writes nothing; exits 1 if a file is out of date, untranslated, changed since translated, invalid, or (for locales in `reviewed`) not reviewed by a person. For CI before deploy.
+- `npx textlate accept [--locales de]`: marks AI translations as reviewed. A person's edit of a translation also counts as reviewed (textlate keeps hashes in `<dir>/.textlate/<locale>.json`; commit it).
+- Changed text: when a message's text changes, the old text's translation (if alike) stands in, marked changed; `translate` sends it with the old text and translation so the model changes as little as needed (`carryOver: false` turns it off).
 - `npx textlate setup`: asks which provider, model and API key to use, writes the provider, model and instructions to the config file, and offers to save the key to `.env.local`/`.env`. `translate` runs it by itself when there is no model or key yet, so the first run is never a dead end. `--no-input` (or no terminal, or `CI`) fails with the setting to add instead of asking.
 - Every run first reports what it found: source locale, number of locales, messages found and files scanned, then a table of each locale (translated/total with a percentage, missing, new, unused, invalid) with a total row. `translate` prints that table before it calls the AI, shows a progress bar, and prints it again afterwards; `check` lists each file's issues under it. Plain text without a terminal; `--no-color`/`NO_COLOR` turns colours off, `NO_UNICODE` draws ASCII tables.
-- Config in `textlate.config.{js,mjs,json,ts}`: `sourceLocale` ('en'), `locales` (default: each <locale>.json in `dir`), `dir` ('src/locales'), `include` (['src']), `functions` (['translate', 'msg']), `keepUnused`, `ai: { provider: 'anthropic' | 'openai' | 'google', model, apiKey, baseUrl, instructions, batchSize, concurrency, body, translate }`.
+- Config in `textlate.config.{js,mjs,json,ts}`: `sourceLocale` ('en'), `locales` (default: each locale with files in `dir`), `dir` ('src/locales'), `include` (['src']), `exclude`, `functions` (['translate', 'msg']), `properties` (object properties whose string values are messages, e.g. ['label', 'description']), `namespaces` ({ app: { include, exclude?, functions?, properties? } } → `<dir>/<locale>/<namespace>.json`), `keepUnused`, `carryOver` (true), `glossary` ({ TareAI: { keep: true }, workflow: { note, translations: { de: 'Workflow' } } }), `reviewed` (locales, or ['*']), `ai: { provider: 'anthropic' | 'openai' | 'google', model, apiKey, baseUrl, instructions, batchSize (40), concurrency (8 requests across all locales), body, translate }`. Claude's system prompt is cached; files are written atomically.
 - AI defaults: provider `anthropic`, model `claude-opus-5-5`. Keys from `ANTHROPIC_API_KEY`, `OPENAI_API_KEY` or `GEMINI_API_KEY` (also read from `.env`, `.env.local`); a key is never written to the config file. `openai` with `baseUrl` covers OpenRouter, Groq, Mistral, DeepSeek and Ollama. `ai.translate` plugs in any other SDK.
 - Typical scripts: `"i18n": "textlate translate"`, `"prebuild": "textlate translate"`, or `textlate check` in CI.
 
@@ -76,12 +82,14 @@ const labels = { active: msg('Active') }; translate(labels[status])             
 - `src/i18n.ts`: `createI18n({ locales: { … } })` plus the `Register` augmentation, as above, and `export const localeCookie = cookieDetector('NEXT_LOCALE')`. The language switcher calls `localeCookie.persist?.(next)` before navigating.
 - `src/proxy.ts`: redirect `/path` to `/{locale}/path`, choosing the locale with `i18n.match(request.cookies.get('NEXT_LOCALE')?.value) ?? negotiateLocale(request.headers.get('accept-language'), i18n.locales, i18n.sourceLocale)`.
 - `src/app/[lang]/layout.tsx`: `generateStaticParams = () => i18n.locales.map(lang => ({ lang }))`. Call `notFound()` unless `i18n.match(lang) === lang`. Render `<html lang={lang} dir={i18n.scope(lang).dir}>`.
-- `src/app/[lang]/providers.tsx` (`'use client'`): `<I18nProvider i18n={i18n} locale={lang}>`. Import the instance in this client file; it can't be passed as a prop from the server.
+- `src/app/[lang]/layout.tsx` also loads `const messages = await i18n.getMessages(lang)` and passes them to the providers.
+- `src/app/[lang]/providers.tsx` (`'use client'`): `<I18nProvider i18n={i18n} locale={lang} messages={messages}>`. Import the instance in this client file; it can't be passed as a prop from the server.
 - Server Components and `generateMetadata`: `const { translate, format } = await i18n.load(lang)`.
 - Client Components: `const { translate } = useI18n()`. Switch language by navigating to the other locale's URL.
 
 ## Docs
 
-- [README](https://github.com/SheikhAminul/textlate#readme): full guide, CLI, API, comparison and migration from react-i18next, react-intl, next-intl
+- [README](https://github.com/SheikhAminul/textlate#readme): full guide, CLI, API, large apps, comparison
+- [CHANGELOG](https://github.com/SheikhAminul/textlate/blob/main/CHANGELOG.md): what changed in 3.0, and how to upgrade
 - [Next.js example](https://github.com/SheikhAminul/textlate/tree/main/examples/nextjs)
 - [Benchmarks](https://github.com/SheikhAminul/textlate/tree/main/bench/compare)

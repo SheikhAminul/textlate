@@ -249,7 +249,7 @@ export interface Review {
 	unreviewed: number
 }
 
-export const reviewRun = (project: Project, scan: Scan, run: LocaleRun, check: (source: Message, value: unknown) => string[]): Review => {
+export const reviewRun = (scan: Scan, run: LocaleRun, check: (source: Message, value: unknown) => string[]): Review => {
 	const untranslated = new Map<string, Message>()
 	const previous = new Map<string, { text: string; translation: unknown }>()
 	const problems: { key: string; problem: string }[] = []

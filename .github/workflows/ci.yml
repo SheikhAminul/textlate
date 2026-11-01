@@ -2,7 +2,7 @@ name: CI
 
 on:
   push:
-    branches: [main]
+    branches: [main, V3]
   pull_request:
 
 jobs:
@@ -22,6 +22,7 @@ jobs:
       - run: npm run typecheck
       - run: npm test
       - run: npm run size
+      - run: npm run bench
 
   nextjs:
     runs-on: ubuntu-latest
