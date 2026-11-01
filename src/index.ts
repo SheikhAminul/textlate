@@ -1,6 +1,6 @@
 import type { I18n, Message } from './types.js'
 
-export { createI18n, type I18nConfig } from './core.js'
+export { createI18n, DEFAULT_NAMESPACE, type I18nConfig, type LocaleNames } from './core.js'
 export { cookieDetector, htmlLangDetector, navigatorDetector, queryDetector, storageDetector, type CookieOptions } from './detectors.js'
 export { getDirection, matchLocale, negotiateLocale, parseAcceptLanguage } from './locale.js'
 export type * from './types.js'

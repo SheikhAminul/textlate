@@ -4,7 +4,8 @@ import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { buildPrompt, createProvider, translateMessages, type Runtime } from '../src/cli/ai.js'
-import { checkTranslation, isTranslated, pluralCategories, syncMessages } from '../src/cli/catalog.js'
+import { checkTranslation, isTranslated, pluralCategories } from '../src/cli/catalog.js'
+import { syncLocale } from '../src/cli/sync.js'
 import { PassThrough } from 'node:stream'
 import { envFile, saveAISettings, saveEnvKey } from '../src/cli/edit.js'
 import { Cancelled, createPrompter, type Prompter } from '../src/cli/prompt.js'
@@ -142,13 +143,14 @@ describe('catalog', () => {
 			['New', 'New'],
 			['Open // ticket status', { text: 'Open', context: 'ticket status' }]
 		])
-		const result = syncMessages(sources, { Gone: 'Ido', '{count} files': '', Hi: 'Hola' }, 'es')
-		expect(result.messages).toEqual({ Hi: 'Hola', '{count} files': { one: '', many: '', other: '' }, New: '', 'Open // ticket status': '' })
-		expect(Object.keys(result.messages)).toEqual(['Hi', '{count} files', 'New', 'Open // ticket status'])
-		expect(result).toMatchObject({ added: 2, removed: 1 })
+		const sync = (messages: Map<string, Message>, existing: Record<string, unknown>, keepUnused = false) => syncLocale(messages, new Map(Object.entries(existing)), new Map(), 'es', { keepUnused })
+		const result = sync(sources, { Gone: 'Ido', '{count} files': '', Hi: 'Hola' })
+		expect(Object.fromEntries(result.values)).toEqual({ Hi: 'Hola', '{count} files': { one: '', many: '', other: '' }, New: '', 'Open // ticket status': '' })
+		expect([...result.values.keys()]).toEqual(['Hi', '{count} files', 'New', 'Open // ticket status'])
+		expect(result).toMatchObject({ added: 2, removed: 1, carried: 0 })
 
-		expect(syncMessages(new Map([['A', 'A']]), { Old: 'Viejo' }, 'es', true).messages).toEqual({ A: '', Old: 'Viejo' })
-		expect(JSON.stringify(syncMessages(new Map([['__proto__', '__proto__']]), {}, 'es').messages)).toBe('{"__proto__":""}')
+		expect(Object.fromEntries(sync(new Map([['A', 'A']]), { Old: 'Viejo' }, true).values)).toEqual({ A: '', Old: 'Viejo' })
+		expect([...sync(new Map([['__proto__', '__proto__']]), {}).values.keys()]).toEqual(['__proto__'])
 	})
 })
 
@@ -247,7 +249,9 @@ describe('providers', () => {
 		})
 		expect(url).toBe('https://api.anthropic.com/v1/messages')
 		expect(headers).toMatchObject({ 'x-api-key': 'sk-test', 'anthropic-version': '2023-06-01', 'anthropic-beta': 'server-side-fallback-2026-07-01' })
-		expect(body).toMatchObject({ model: 'claude-opus-5-5', max_tokens: 16000, system: 'PROMPT', fallbacks: 'default' })
+		expect(body).toMatchObject({ model: 'claude-opus-5-5', max_tokens: 16000, fallbacks: 'default' })
+		// The system prompt is cached: every batch of a locale sends the same one.
+		expect(body.system).toEqual([{ type: 'text', text: 'PROMPT', cache_control: { type: 'ephemeral' } }])
 		expect(body.output_config.effort).toBe('low')
 		expect(body.output_config.format.type).toBe('json_schema')
 		expect(body.output_config.format.schema).toEqual({
@@ -558,7 +562,7 @@ describe('run', () => {
 			// The answers are used for this run, including the instructions.
 			expect(requests[0]?.headers['x-api-key']).toBe('sk-entered')
 			expect(requests[0]?.body.model).toBe('claude-sonnet-5-5')
-			expect(requests[0]?.body.system).toContain('A banking app.')
+			expect(requests[0]?.body.system[0].text).toContain('A banking app.')
 			expect(read('src/locales/es.json')['I am fine.']).toBe('ES I am fine.')
 			// The provider, model and instructions go to a config file; the key goes to .env.
 			const config = readFileSync(join(cwd, 'textlate.config.mjs'), 'utf8')

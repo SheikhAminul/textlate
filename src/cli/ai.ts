@@ -1,4 +1,4 @@
-import type { AIConfig, TranslateRequest } from '../config.js'
+import type { AIConfig, GlossaryTerm, TranslateRequest } from '../config.js'
 import type { Message } from '../types.js'
 import { checkTranslation, isPlural, isTranslated, pluralCategories } from './catalog.js'
 
@@ -31,10 +31,22 @@ export const languageName = (locale: string): string => {
 	}
 }
 
+type Glossary = Readonly<Record<string, GlossaryTerm>>
+
+/** The glossary's lines for `locale`: terms to keep, what terms mean, and how they're translated into it. */
+const glossaryLines = (glossary: Glossary | undefined, locale: string) =>
+	Object.entries(glossary ?? {}).flatMap(([term, rule]) => {
+		const translation = rule.translations?.[locale]
+		if (!rule.keep && !rule.note && !translation) return []
+		const how = rule.keep ? 'keep it exactly as written, never translate it' : translation ? `translate it as "${translation}"` : 'translate it to fit'
+		return [`- "${term}"${rule.note ? ` (${rule.note})` : ''}: ${how}.`]
+	})
+
 /** The system prompt for translating from `sourceLocale` into `locale`. */
-export const buildPrompt = (sourceLocale: string, locale: string, instructions?: string) => {
+export const buildPrompt = (sourceLocale: string, locale: string, instructions?: string, glossary?: Glossary) => {
 	const source = languageName(sourceLocale)
 	const target = languageName(locale)
+	const terms = glossaryLines(glossary, locale)
 	return `You translate the user interface of a software application from ${source} (${sourceLocale}) into ${target} (${locale}).
 
 Rules:
@@ -44,8 +56,31 @@ Rules:
 - Keep leading and trailing whitespace.
 - Each input item has the source "text", or "plural" forms keyed by plural category, where {count} is the number. Answer a "text" with a string. Answer "plural" forms with an object that has exactly the categories ${target} uses (${pluralCategories(locale).join(', ')}), plus "zero" when the source has one.
 - An item's "context" says where or how the text is used. Use it to choose the right words; never translate or include it.
-- Answer with a JSON object that maps each id of the input to its translation, and nothing else.${instructions ? `\n\nAbout this application:\n${instructions.trim()}` : ''}`
+- An item with "previous" was translated before, when its source text was "previous.text". Update "previous.translation" to the new source text, changing no more than the change calls for, so reviewed wording stays as it was.
+- Answer with a JSON object that maps each id of the input to its translation, and nothing else.${terms.length ? `\n\nGlossary:\n${terms.join('\n')}` : ''}${instructions ? `\n\nAbout this application:\n${instructions.trim()}` : ''}`
 }
+
+/**
+ * Runs at most `size` jobs at a time, in the order they ask; the others wait their turn. A finished job hands its slot
+ * straight to the next one, so there are never more than `size` running.
+ */
+export const limiter = (size: number) => {
+	let active = 0
+	const queue: (() => void)[] = []
+	return async <T>(work: () => Promise<T>): Promise<T> => {
+		if (active < size) active++
+		else await new Promise<void>(start => queue.push(start))
+		try {
+			return await work()
+		} finally {
+			const next = queue.shift()
+			if (next) next()
+			else active--
+		}
+	}
+}
+
+export type Limit = ReturnType<typeof limiter>
 
 /** A JSON schema for the answer, so providers with structured outputs can only return the expected shape. */
 const answerSchema = (request: TranslateRequest) => {
@@ -131,14 +166,16 @@ export const createProvider = (ai: AIConfig, runtime: Runtime): Provider => {
 	const model = ai.model ?? (provider === 'anthropic' ? DEFAULT_MODEL : undefined)
 	if (!model) throw new Error(`Set ai.model for the ${provider} provider.`)
 
-	// Each message as the prompt describes it: { text } or { plural }, with its context.
+	// Each message as the prompt describes it: { text } or { plural }, with its context, and what it was before.
 	const user = (request: TranslateRequest) =>
 		JSON.stringify(
 			Object.fromEntries(
 				Object.entries(request.messages).map(([id, message]) => {
-					if (typeof message === 'string') return [id, { text: message }]
+					const previous = request.previous?.[id]
+					const before = previous && { previous: { text: previous.text, translation: previous.translation } }
+					if (typeof message === 'string') return [id, { text: message, ...before }]
 					const { context, text, ...forms } = message
-					return [id, { ...(text === undefined ? { plural: forms } : { text }), ...(context && { context }) }]
+					return [id, { ...(text === undefined ? { plural: forms } : { text }), ...(context && { context }), ...before }]
 				})
 			),
 			null,
@@ -160,7 +197,8 @@ export const createProvider = (ai: AIConfig, runtime: Runtime): Provider => {
 					{
 						model,
 						max_tokens: 16000,
-						system: request.prompt,
+						// The system prompt is the same for every batch of a locale: cached, later batches cost a tenth for it.
+						system: [{ type: 'text', text: request.prompt, cache_control: { type: 'ephemeral' } }],
 						messages: [{ role: 'user', content: user(request) }],
 						output_config: { format: { type: 'json_schema', schema: answerSchema(request) }, ...(model === DEFAULT_MODEL && { effort: 'medium' }) },
 						// If a safety classifier declines the request, it is retried on another model instead of failing.
@@ -230,11 +268,16 @@ export interface TranslateTask {
 	provider: Provider
 	sourceLocale: string
 	locale: string
-	/** Messages to translate, by their text. */
+	/** Messages to translate, by their key. */
 	messages: ReadonlyMap<string, Message>
+	/** For messages whose text changed: their old text and its translation, to update rather than redo. */
+	previous?: ReadonlyMap<string, { text: string; translation: unknown }> | undefined
 	instructions?: string | undefined
+	glossary?: Glossary | undefined
 	batchSize?: number | undefined
-	/** Called with each batch's valid translations, by text, so progress is saved as it goes. */
+	/** Shares requests out with other tasks (see `limiter`). Without one, batches go one at a time. */
+	limit?: Limit | undefined
+	/** Called with each batch's valid translations, by key, so progress is saved as it goes. */
 	onTranslated: (translations: Record<string, unknown>) => void
 }
 
@@ -258,20 +301,25 @@ const normalize = (source: Message, value: unknown, locale: string) => {
  * form present); invalid ones are sent once more, then reported. A batch cut off at the output limit is split.
  */
 export const translateMessages = async (task: TranslateTask): Promise<TranslateOutcome> => {
-	const prompt = buildPrompt(task.sourceLocale, task.locale, task.instructions)
+	const prompt = buildPrompt(task.sourceLocale, task.locale, task.instructions, task.glossary)
 	const outcome: TranslateOutcome = { translated: 0, failed: [] }
+	const limit = task.limit ?? limiter(1)
 
 	const send = async (items: [string, Message][], retry: boolean): Promise<void> => {
 		const ids = new Map(items.map(([text, source], index) => [String(index + 1), { text, source }]))
+		const previous = Object.fromEntries([...ids].flatMap(([id, { text }]) => (task.previous?.has(text) ? [[id, task.previous.get(text)!]] : [])))
 		let answer: Record<string, unknown>
 		try {
-			answer = await task.provider({
-				sourceLocale: task.sourceLocale,
-				locale: task.locale,
-				pluralCategories: pluralCategories(task.locale),
-				messages: Object.fromEntries([...ids].map(([id, { source }]) => [id, source])),
-				prompt
-			})
+			answer = await limit(() =>
+				task.provider({
+					sourceLocale: task.sourceLocale,
+					locale: task.locale,
+					pluralCategories: pluralCategories(task.locale),
+					messages: Object.fromEntries([...ids].map(([id, { source }]) => [id, source])),
+					...(Object.keys(previous).length && { previous }),
+					prompt
+				})
+			)
 		} catch (error) {
 			if (error instanceof ApiError) throw error
 			if (error instanceof Truncated && items.length > 1) {
@@ -292,7 +340,7 @@ export const translateMessages = async (task: TranslateTask): Promise<TranslateO
 			const problems =
 				value === undefined
 					? ['is missing from the answer']
-					: checkTranslation(source, value, task.locale).concat(isTranslated(value) ? [] : ['is empty'])
+					: checkTranslation(source, value, task.locale, task.glossary).concat(isTranslated(value) ? [] : ['is empty'])
 			if (!problems.length) valid[text] = value
 			else if (!retry) again.push([text, source])
 			else outcome.failed.push({ text, reason: `the translation ${problems.join(', ')}` })
@@ -306,6 +354,9 @@ export const translateMessages = async (task: TranslateTask): Promise<TranslateO
 
 	const items = [...task.messages]
 	const size = Math.max(1, task.batchSize ?? 40)
-	for (let start = 0; start < items.length; start += size) await send(items.slice(start, start + size), false)
+	const batches: [string, Message][][] = []
+	for (let start = 0; start < items.length; start += size) batches.push(items.slice(start, start + size))
+	// Every batch is under way at once; `limit` decides how many requests are actually in flight.
+	await Promise.all(batches.map(batch => send(batch, false)))
 	return outcome
 }

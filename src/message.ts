@@ -55,11 +55,13 @@ const parse = (message: string): readonly Node[] => {
 	return root.children
 }
 
-// Trees are shared by every locale that renders the same text.
+// Trees are shared by every locale that renders the same text. The cap is high enough for a large app's every message
+// with markup in every locale, so a catalog that size is parsed once, not over and over.
 const parsed = new Map<string, readonly Node[]>()
+const PARSED_LIMIT = 50_000
 
 /** Most messages are plain text: they skip parsing, and the memory for a tree, entirely. */
-export const compile = (message: string): Compiled => (MARKUP.test(message) ? reuse(parsed, message, parse) : message)
+export const compile = (message: string): Compiled => (MARKUP.test(message) ? reuse(parsed, message, parse, PARSED_LIMIT) : message)
 
 export const isParamValue = (value: unknown): value is ParamValue =>
 	typeof value === 'string' || typeof value === 'number' || typeof value === 'bigint' || value instanceof Date
@@ -68,14 +70,15 @@ export const isParamValue = (value: unknown): value is ParamValue =>
 export const valueFor = (values: Values, name: string): unknown => (values && Object.hasOwn(values, name) ? values[name] : undefined)
 
 /** Render to a string. Tags keep their text, which suits `aria-label`, `title` and `<title>`. */
-export const renderString = (nodes: readonly Node[], locale: string, values: Values): string => {
+export const renderString = (nodes: readonly Node[], locale: string, values: Values, timeZone?: string): string => {
 	let out = ''
 	for (const node of nodes) {
 		if (typeof node === 'string') out += node
 		else if ('param' in node) {
 			const value = valueFor(values, node.param)
-			out += value === undefined ? `{${node.param}}` : isParamValue(value) ? formatValue(locale, value) : String(value)
-		} else out += renderString(node.children, locale, values)
+			// Text first: it's the most common value, and needs no formatting.
+			out += typeof value === 'string' ? value : value === undefined ? `{${node.param}}` : isParamValue(value) ? formatValue(locale, value, timeZone) : String(value)
+		} else out += renderString(node.children, locale, values, timeZone)
 	}
 	return out
 }

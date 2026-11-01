@@ -14,15 +14,21 @@ export const isRich = (values: Values) => {
 }
 
 /** Render to React nodes: tags with the matching element or `chunks => node` function, params as nodes or text. */
-export const renderRich = (nodes: readonly Node[], locale: string, values: Values, onMissingTag: (tag: string) => void): ReactNode[] => {
+export const renderRich = (
+	nodes: readonly Node[],
+	locale: string,
+	values: Values,
+	onMissingTag: (tag: string) => void,
+	timeZone?: string
+): ReactNode[] => {
 	const out: ReactNode[] = []
 	for (const node of nodes) {
 		if (typeof node === 'string') out.push(node)
 		else if ('param' in node) {
 			const value = valueFor(values, node.param)
-			out.push(value === undefined ? `{${node.param}}` : isParamValue(value) ? formatValue(locale, value) : (value as ReactNode))
+			out.push(value === undefined ? `{${node.param}}` : isParamValue(value) ? formatValue(locale, value, timeZone) : (value as ReactNode))
 		} else {
-			const children = renderRich(node.children, locale, values, onMissingTag)
+			const children = renderRich(node.children, locale, values, onMissingTag, timeZone)
 			const render = valueFor(values, node.tag)
 			if (typeof render === 'function') out.push((render as (chunks: ReactNode) => ReactNode)(toNode(children)))
 			else if (isValidElement(render)) out.push(cloneElement(render, undefined, ...children))

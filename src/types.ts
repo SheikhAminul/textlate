@@ -30,8 +30,32 @@ export interface Translations {
 	readonly [text: string]: string | PluralTranslation
 }
 
+/** What a translation file's import gives: its translations, or a module with them as its default export. */
+export type TranslationModule = Translations | { readonly default: Translations }
+
 /** A locale's translations, or a loader such as `() => import('./locales/es.json')`. */
-export type TranslationSource = Translations | (() => Promise<Translations | { readonly default: Translations }>)
+export type TranslationSource = Translations | (() => Promise<TranslationModule>)
+
+/** Loads one namespace of one locale: `(locale, namespace) => import(\`./locales/${locale}/${namespace}.json\`)`. */
+export type TranslationLoader = (locale: string, namespace: string) => Promise<TranslationModule>
+
+/**
+ * Loaded translations by locale and namespace, e.g. from `await i18n.getMessages(lang, ['app'])` on the server, to
+ * hand to `<I18nProvider messages>` so the browser needn't load them again.
+ */
+export interface Messages {
+	readonly [locale: string]: { readonly [namespace: string]: Translations } | undefined
+}
+
+export interface ScopeOptions {
+	/** The time zone dates render in, e.g. the signed-in user's. Default: the instance's `timeZone`. */
+	timeZone?: string | undefined
+}
+
+export interface LoadOptions extends ScopeOptions {
+	/** The namespaces to load, e.g. `['catalog']`. Default: the instance's `namespaces`. */
+	namespaces?: string | readonly string[] | undefined
+}
 
 /** Values that render as text. Numbers, bigints and dates are formatted for the locale. */
 export type ParamValue = string | number | bigint | Date
@@ -141,6 +165,8 @@ export interface Scope<L extends string = string> {
 	readonly locale: L
 	/** `'rtl'` for Arabic, Hebrew, Persian, Urdu and other right-to-left scripts. */
 	readonly dir: 'ltr' | 'rtl'
+	/** The time zone dates render in, when one is set; otherwise the runtime's. */
+	readonly timeZone: string | undefined
 	readonly translate: Translate
 	readonly format: Formatter
 }
@@ -178,14 +204,16 @@ export interface I18n<L extends string = string> extends Scope<L> {
 	readonly sourceLocale: L
 	/** The source locale, then every locale with translations. */
 	readonly locales: readonly L[]
-	/** True once the active locale and its fallbacks are loaded. */
+	/** The namespaces loaded when none are named: `['default']` unless the config lists its own. */
+	readonly namespaces: readonly string[]
+	/** True once the active locale's namespaces and their fallbacks are loaded. */
 	readonly isReady: boolean
-	/** Settles when the initial locale and its fallbacks are loaded. */
+	/** Settles when the initial locale's namespaces and their fallbacks are loaded. */
 	readonly ready: Promise<void>
 
 	/**
-	 * Load `locale` (best match) and switch to it once loaded. Concurrent calls: the last one wins.
-	 * Detectors with `persist` remember the choice.
+	 * Load `locale` (best match) and switch to it once loaded, with every namespace the current locale has loaded.
+	 * Concurrent calls: the last one wins. Detectors with `persist` remember the choice.
 	 */
 	setLocale(locale: string | readonly string[]): Promise<void>
 	/** Pick a locale using the configured detectors and switch to it. A detected locale is not persisted. */
@@ -193,25 +221,35 @@ export interface I18n<L extends string = string> extends Scope<L> {
 	/** Best registered match for a requested locale or preference list. */
 	match(requested: string | readonly string[] | null | undefined): L | undefined
 	/**
-	 * Load a locale (best match; the source locale if none) and its fallbacks, without switching to it, and return
-	 * its scope. Defaults to the active locale. Ideal for Server Components.
+	 * Load a locale (best match; the source locale if none) with its fallbacks, without switching to it, and return its
+	 * scope. Defaults to the active locale and the default namespaces. Ideal for Server Components and route handlers:
+	 * nothing is shared between requests.
 	 *
 	 * @example
 	 * ```tsx
-	 * const { translate, format } = await i18n.load(lang)
+	 * const { translate, format } = await i18n.load(lang, { namespaces: ['app', 'emails'], timeZone: user.timeZone })
 	 * return <h1>{translate('Welcome back, {name}!', { name })}</h1>
 	 * ```
 	 */
-	load(locale?: string): Promise<Scope<L>>
+	load(locale?: string, options?: LoadOptions): Promise<Scope<L>>
+	/** Whether a locale's namespaces (default: the default ones) and their fallbacks are loaded. */
+	isLoaded(locale?: string, namespaces?: string | readonly string[]): boolean
 	/** The scope of a locale (best match), as far as it is loaded: untranslated text shows the source text. */
-	scope(locale: string): Scope<L>
-	/** Add a locale's translations, e.g. ones sent from the server. Replacing loaded ones re-renders subscribers. */
-	addTranslations(locale: L, translations: Translations): void
-	/** The loaded translations of a locale, if any. */
-	getTranslations(locale: L): Translations | undefined
+	scope(locale: string, options?: ScopeOptions): Scope<L>
+	/**
+	 * Load a locale's namespaces and return them, with their fallbacks', for `<I18nProvider messages>`: the browser then
+	 * starts with exactly what the page uses, and loads nothing.
+	 */
+	getMessages(locale?: string, namespaces?: string | readonly string[]): Promise<Messages>
+	/** Add translations by locale and namespace, e.g. ones sent from the server. Namespaces already loaded are kept. */
+	addMessages(messages: Messages): void
+	/** Add or replace one namespace of a locale (default: the first default namespace). Replacing re-renders subscribers. */
+	addTranslations(locale: L, translations: Translations, namespace?: string): void
+	/** One loaded namespace of a locale (default: the first default namespace), if loaded. */
+	getTranslations(locale: L, namespace?: string): Translations | undefined
 
-	/** A new instance with its own active locale that shares this one's config and loaded translations. */
-	clone(options?: { locale?: string }): I18n<L>
+	/** A new instance with its own active locale (and time zone) that shares this one's config and loaded translations. */
+	clone(options?: { locale?: string; timeZone?: string | undefined }): I18n<L>
 	/** `subscribe` and `getSnapshot` follow the `useSyncExternalStore` contract; the React bindings use them. */
 	subscribe(listener: () => void): () => void
 	getSnapshot(): I18nSnapshot<L>

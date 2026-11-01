@@ -1,7 +1,8 @@
 /// <reference types="node" />
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
-import { dirname } from 'node:path'
+import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs'
+import { basename, dirname, join } from 'node:path'
 import { PLURAL_CATEGORIES, TOKEN } from '../message.js'
+import type { GlossaryTerm } from '../config.js'
 import type { Message, PluralForms } from '../types.js'
 
 /** A translation file: message key → translation (a string, or plural forms). `''` means not translated yet. */
@@ -53,7 +54,12 @@ const syntax = (texts: readonly unknown[]) => {
  * What is wrong with a translation: a param or tag the source has and the translation lacks (or the other way
  * round), or a missing plural form. Placeholders may move; they can't be renamed or dropped.
  */
-export const checkTranslation = (source: Message, translation: unknown, locale: string): string[] => {
+export const checkTranslation = (
+	source: Message,
+	translation: unknown,
+	locale: string,
+	glossary?: Readonly<Record<string, GlossaryTerm>> | undefined
+): string[] => {
 	const problems: string[] = []
 	let texts: unknown[]
 	if (!isPlural(source)) {
@@ -79,6 +85,11 @@ export const checkTranslation = (source: Message, translation: unknown, locale: 
 	for (const param of actual.params) if (!expected.params.has(param) && param !== optional) problems.push(`has an unknown {${param}}`)
 	for (const tag of expected.tags) if (!actual.tags.has(tag)) problems.push(`is missing <${tag}>`)
 	for (const tag of actual.tags) if (!expected.tags.has(tag)) problems.push(`has an unknown <${tag}>`)
+	// Terms to keep must come through as they're written, in every form that has them.
+	for (const [term, rule] of Object.entries(glossary ?? {})) {
+		if (!rule.keep || !sourceTexts(source).some(text => text.includes(term))) continue
+		if (!texts.some(text => typeof text === 'string' && text.includes(term))) problems.push(`should keep "${term}" as it is`)
+	}
 	return problems
 }
 
@@ -106,38 +117,28 @@ export const readLocaleFile = (path: string): LocaleFile => {
 export const serialize = (file: LocaleFile, messages: LocaleMessages) =>
 	`${JSON.stringify(messages, null, file.raw?.match(/^([ \t]+)"/m)?.[1] ?? '  ')}\n`
 
+/**
+ * Write `content` to `path` all at once: to a file beside it, then renamed over it. A run that stops halfway (Ctrl-C,
+ * a crash, a full disk) leaves the old file or the new one, never half of one.
+ */
+export const writeAtomic = (path: string, content: string) => {
+	mkdirSync(dirname(path), { recursive: true })
+	const temporary = join(dirname(path), `.${basename(path)}.${process.pid}.${Math.random().toString(36).slice(2)}.tmp`)
+	try {
+		writeFileSync(temporary, content)
+		renameSync(temporary, path)
+	} catch (error) {
+		rmSync(temporary, { force: true })
+		throw error
+	}
+}
+
 /** Write `messages` if they differ from the file. Returns whether it was written. */
 export const writeLocaleFile = (file: LocaleFile, messages: LocaleMessages): boolean => {
 	const content = serialize(file, messages)
 	if (content === file.raw) return false
-	mkdirSync(dirname(file.path), { recursive: true })
-	writeFileSync(file.path, content)
+	writeAtomic(file.path, content)
 	file.raw = content
 	file.messages = messages
 	return true
-}
-
-/**
- * Bring a locale's translations in line with the messages in the code, in the code's order. Translations are kept,
- * new messages get a placeholder to translate, and text no longer in the code is dropped unless `keepUnused`.
- */
-export const syncMessages = (messages: ReadonlyMap<string, Message>, existing: LocaleMessages, locale: string, keepUnused = false) => {
-	// A Map, then `fromEntries`, so a text like `__proto__` is data rather than a prototype.
-	const synced = new Map<string, unknown>()
-	let added = 0
-	for (const [text, source] of messages) {
-		const value = Object.hasOwn(existing, text) ? existing[text] : undefined
-		// An untranslated entry follows the source's shape, e.g. when a message became a plural.
-		const fits = isPlural(source) ? isForms(value) : typeof value === 'string'
-		const keep = value !== undefined && (isTranslated(value) || fits)
-		if (value === undefined) added++
-		synced.set(text, keep ? value : placeholder(source, locale))
-	}
-	let removed = 0
-	for (const [text, value] of Object.entries(existing)) {
-		if (synced.has(text)) continue
-		if (keepUnused) synced.set(text, value)
-		else removed++
-	}
-	return { messages: Object.fromEntries(synced) as LocaleMessages, added, removed }
 }

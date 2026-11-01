@@ -1,37 +1,53 @@
 /// <reference types="node" />
-import { existsSync, readdirSync, readFileSync } from 'node:fs'
+import { existsSync, readFileSync } from 'node:fs'
 import { basename, join, relative, resolve } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { parseArgs } from 'node:util'
 import type { AIConfig, Config } from '../config.js'
-import type { Message } from '../types.js'
-import { createProvider, languageName, translateMessages, type Runtime } from './ai.js'
-import { checkTranslation, isTranslated, readLocaleFile, serialize, syncMessages, writeLocaleFile, type LocaleFile, type LocaleMessages } from './catalog.js'
+import { createProvider, languageName, limiter, translateMessages, type Runtime } from './ai.js'
+import { checkTranslation } from './catalog.js'
+import {
+	acceptRun,
+	fileOf,
+	isOutdated,
+	openLocale,
+	recordTranslations,
+	resolveProject,
+	reviewRun,
+	scanProject,
+	UsageError,
+	writeRun,
+	type LocaleRun,
+	type Project,
+	type Review,
+	type Scan
+} from './project.js'
 import { Cancelled, createPrompter, isInteractive, type Prompter } from './prompt.js'
-import { scanFiles } from './scan.js'
 import { missingAISettings, setupAI, setupHint } from './setup.js'
 import { createRenderer, createStatus, type Column, type Row, type Styler } from './ui.js'
 
 const CONFIG_FILES = ['ts', 'mts', 'js', 'mjs', 'json'].map(extension => `textlate.config.${extension}`)
-const LOCALE_FILE = /^([a-z]{2,3}(?:[-_][a-z\d]+)*)\.json$/i
 
 const HELP = `Usage: textlate <command> [paths...] [options]
 
 Commands:
-  extract    Find the messages in your code and update <dir>/<locale>.json
-  translate  Extract, then translate what isn't translated yet with AI
-  check      Fail if a locale file is out of date, untranslated or invalid (for CI)
+  extract    Find the messages in your code and update the translation files
+  translate  Extract, then translate with AI what isn't translated yet, or changed since it was
+  check      Fail if a translation file is out of date, untranslated, changed, invalid or unreviewed (for CI)
+  accept     Mark the AI translations of the locales as reviewed by a person
   setup      Choose the AI provider, model and API key, and save them
 
 Arguments:
-  paths                    Files or directories to scan (default: src)
+  paths                    Files or directories to scan (default: src; with namespaces, each one's include)
 
 Options:
   -c, --config <file>      Config file (default: textlate.config.{ts,mts,js,mjs,json})
-  -d, --dir <dir>          Directory of <locale>.json files (default: src/locales)
+  -d, --dir <dir>          Directory of translation files (default: src/locales)
   -s, --source <locale>    Language the text in your code is written in (default: en)
-  -l, --locales <list>     Locales to translate into, e.g. es,bn (default: each <locale>.json in --dir)
+  -l, --locales <list>     Locales to work on, e.g. es,bn (default: each locale with files in --dir)
   -f, --functions <list>   Functions whose first argument is a message (default: translate,msg)
+  -p, --properties <list>  Object properties whose string values are messages, e.g. label,description
+      --reviewed <list>    Locales whose translations must be reviewed for check to pass (* for all)
       --provider <name>    AI provider: anthropic (default), openai or google
       --model <id>         AI model (default for anthropic: claude-opus-5-5)
       --keep-unused        Keep translations of text that is no longer in the code
@@ -47,9 +63,8 @@ Examples:
   textlate setup
   textlate extract --locales es,bn
   textlate translate
-  textlate check`
-
-class UsageError extends Error {}
+  textlate check
+  textlate accept --locales de`
 
 export interface RunOptions {
 	cwd?: string
@@ -108,49 +123,7 @@ const plural = (count: number, noun: string) => `${count} ${noun}${count === 1 ?
 const quote = (text: string) => JSON.stringify(text.length > 60 ? `${text.slice(0, 57)}...` : text)
 const sum = (values: readonly number[]) => values.reduce((total, value) => total + value, 0)
 
-/** Run up to `limit` jobs at a time. */
-const pool = async <T>(items: readonly T[], limit: number, work: (item: T) => Promise<void>) => {
-	let next = 0
-	const worker = async () => {
-		while (next < items.length) await work(items[next++]!)
-	}
-	await Promise.all(Array.from({ length: Math.max(1, Math.min(limit, items.length)) }, worker))
-}
 
-interface LocaleState {
-	locale: string
-	file: LocaleFile
-	messages: LocaleMessages
-	added: number
-	removed: number
-}
-
-/** Untranslated messages, and translations whose params, tags or plural forms don't match the source. */
-const review = (sources: ReadonlyMap<string, Message>, state: LocaleState) => {
-	const untranslated = new Map<string, Message>()
-	const problems: string[] = []
-	for (const [text, source] of sources) {
-		const value = state.messages[text]
-		if (!isTranslated(value)) untranslated.set(text, source)
-		else for (const problem of checkTranslation(source, value, state.locale)) problems.push(`${quote(text)} ${problem}`)
-	}
-	return { untranslated, problems }
-}
-
-/** Where one locale stands: what it has, what it misses and what is wrong with it. */
-interface Snapshot {
-	state: LocaleState
-	untranslated: Map<string, Message>
-	problems: string[]
-	/** The file on disk is not what extract would write: messages were added, removed or reordered. */
-	outdated: boolean
-}
-
-const snapshot = (sources: ReadonlyMap<string, Message>, state: LocaleState): Snapshot => ({
-	state,
-	...review(sources, state),
-	outdated: serialize(state.file, state.messages) !== state.file.raw
-})
 
 /**
  * Run the command line with `args` (without `node` and the script) and return the exit code.
@@ -179,6 +152,8 @@ export const run = async (args: readonly string[], options: RunOptions = {}): Pr
 				source: { type: 'string', short: 's' },
 				locales: { type: 'string', short: 'l' },
 				functions: { type: 'string', short: 'f' },
+				properties: { type: 'string', short: 'p' },
+				reviewed: { type: 'string' },
 				provider: { type: 'string' },
 				model: { type: 'string' },
 				'keep-unused': { type: 'boolean' },
@@ -198,7 +173,7 @@ export const run = async (args: readonly string[], options: RunOptions = {}): Pr
 		log(HELP)
 		return 0
 	}
-	if (command !== 'extract' && command !== 'translate' && command !== 'check' && command !== 'setup') {
+	if (command !== 'extract' && command !== 'translate' && command !== 'check' && command !== 'accept' && command !== 'setup') {
 		error(`${command ? `Unknown command "${command}".` : 'Missing command.'}\n\n${HELP}`)
 		return 2
 	}
@@ -226,33 +201,23 @@ export const run = async (args: readonly string[], options: RunOptions = {}): Pr
 			return 0
 		}
 
-		const sourceLocale = values.source ?? config.sourceLocale ?? 'en'
-		const dir = resolve(cwd, values.dir ?? config.dir ?? 'src/locales')
-		const existing = existsSync(dir) ? readdirSync(dir).flatMap(name => LOCALE_FILE.exec(name)?.[1] ?? []) : []
-		const locales = list(values.locales) ?? config.locales ?? existing.filter(locale => locale !== sourceLocale).sort()
-		if (!locales.length) {
-			throw new UsageError(
-				`No locales to translate into. Pass --locales es,fr, add \`locales: ['es', 'fr']\` to textlate.config.js, or create ${relative(cwd, join(dir, 'es.json'))}.`
-			)
-		}
-		if (locales.includes(sourceLocale)) throw new UsageError(`"${sourceLocale}" is the source locale: the text in your code. It needs no file.`)
-
-		const include = paths.length ? paths : (config.include ?? ['src'])
-		for (const path of include) {
-			if (!existsSync(resolve(cwd, path))) {
-				throw new UsageError(`Nothing to scan at "${path}". Pass the files or directories that hold your code, or set \`include\` in textlate.config.js.`)
-			}
-		}
-		const scan = scanFiles(include, cwd, list(values.functions) ?? config.functions)
-		const total = scan.messages.size
-
-		const keepUnused = values['keep-unused'] ?? config.keepUnused
-		const states: LocaleState[] = locales.map(locale => {
-			const file = readLocaleFile(join(dir, `${locale}.json`))
-			return { locale, file, ...syncMessages(scan.messages, file.messages, locale, keepUnused) }
+		const project = resolveProject(cwd, config, {
+			paths,
+			locales: list(values.locales),
+			dir: values.dir,
+			source: values.source,
+			functions: list(values.functions),
+			properties: list(values.properties),
+			keepUnused: values['keep-unused'],
+			reviewed: list(values.reviewed)
 		})
-		const name = (state: LocaleState) => relative(cwd, state.file.path)
-		const snapshots = states.map(state => snapshot(scan.messages, state))
+		const scan = scanProject(project)
+		const total = scan.messages.size
+		const runs = project.locales.map(locale => openLocale(project, scan, locale))
+		const check = (locale: string) => (source: Parameters<typeof checkTranslation>[0], value: unknown) => checkTranslation(source, value, locale, project.glossary)
+		const reviewOf = (localeRun: LocaleRun) => reviewRun(project, scan, localeRun, check(localeRun.locale))
+		const where = (localeRun: LocaleRun) =>
+			project.namespaced ? `${relative(cwd, join(project.dir, localeRun.locale)) || localeRun.locale}/` : relative(cwd, localeRun.files[0]!.file.path)
 
 		// What the run is about, before it does anything: the languages, the text found and where the files are.
 		blank()
@@ -260,10 +225,11 @@ export const run = async (args: readonly string[], options: RunOptions = {}): Pr
 		blank()
 		lines(
 			ui.details([
-				['Source', sourceLocale, languageName(sourceLocale)],
-				['Locales', String(locales.length), locales.join(', ')],
+				['Source', project.sourceLocale, languageName(project.sourceLocale)],
+				['Locales', String(project.locales.length), project.locales.join(', ')],
 				['Messages', String(total), `in ${plural(scan.files, 'file')}`],
-				['Files', join(relative(cwd, dir) || '.', '<locale>.json')],
+				project.namespaced && ['Namespaces', String(project.namespaces.length), project.namespaces.map(({ name }) => `${name} ${dim(String(scan.byNamespace.get(name)?.length ?? 0))}`).join(', ')],
+				['Files', relative(cwd, fileOf(project, '<locale>', project.namespaced ? '<namespace>' : '')) || '.'],
 				Boolean(configFile) && ['Config', relative(cwd, configFile!)]
 			])
 		)
@@ -272,53 +238,33 @@ export const run = async (args: readonly string[], options: RunOptions = {}): Pr
 			for (const warning of scan.warnings) log(ui.note('warn', `${warning.file}:${warning.line}  ${warning.message}`))
 		}
 
-		const COLUMNS: Column[] = [
-			{ title: 'Locale' },
-			{ title: 'Language', flex: true, droppable: true },
-			{ title: 'Translated', align: 'right' },
-			{ title: 'Missing', align: 'right' },
-			{ title: 'New', align: 'right', optional: true },
-			{ title: 'Unused', align: 'right', optional: true },
-			{ title: 'Invalid', align: 'right', optional: true }
-		]
-		// Zero is left blank: the table shows a dash, and a column that is zero everywhere is left out altogether.
-		const count = (value: number, sign = '', style: Styler = text => text) => (value ? style(`${sign}${value}`) : '')
-		const share = (done: number, all: number) => `${done}/${all}${all ? `  ${dim(`${Math.round((done / all) * 100)}%`)}` : ''}`
-		const cells = (locale: string, language: string, snaps: readonly Snapshot[]): string[] => {
-			const missing = sum(snaps.map(snap => snap.untranslated.size))
-			return [
-				locale,
-				language,
-				share(snaps.length * total - missing, snaps.length * total),
-				count(missing, '', ui.theme.yellow),
-				count(sum(snaps.map(snap => snap.state.added)), '+'),
-				count(sum(snaps.map(snap => snap.state.removed)), '-'),
-				count(sum(snaps.map(snap => snap.problems.length)), '', ui.theme.red)
-			]
-		}
-		/** The table under `heading`: one row per locale, and a total row when there is more than one. */
-		const catalogs = (snaps: readonly Snapshot[], heading: string) => {
-			const rows: Row[] = snaps.map(snap => ({ cells: cells(ui.theme.cyan(snap.state.locale), languageName(snap.state.locale), [snap]) }))
-			if (snaps.length > 1) rows.push({ rule: true, cells: cells(bold('Total'), dim(plural(snaps.length, 'locale')), snaps) })
+		const table = catalogTable(ui, project, total)
+		const show = (heading: string, snaps: readonly Snapshot[]) => {
 			blank()
 			log(ui.heading(heading))
 			blank()
-			lines(ui.table(COLUMNS, rows))
+			lines(table(snaps))
 			blank()
 		}
-		catalogs(snapshots, 'Catalogs')
+		const snapshotOf = (localeRun: LocaleRun): Snapshot => ({ run: localeRun, review: reviewOf(localeRun), outdated: isOutdated(localeRun, scan) })
+		const snapshots = runs.map(snapshotOf)
+		show('Catalogs', snapshots)
 
 		if (command === 'check') {
 			let failed = 0
 			for (const snap of snapshots) {
+				const { review } = snap
+				const missing = review.untranslated.size - review.previous.size
 				const reasons = [
 					snap.outdated && 'out of date (run textlate extract)',
-					snap.untranslated.size > 0 && `${snap.untranslated.size} untranslated (run textlate translate)`,
-					snap.problems.length > 0 && plural(snap.problems.length, 'invalid translation')
+					missing > 0 && `${missing} untranslated (run textlate translate)`,
+					review.previous.size > 0 && `${review.previous.size} changed since translated (run textlate translate)`,
+					review.problems.length > 0 && plural(review.problems.length, 'invalid translation'),
+					project.reviewed(snap.run.locale) && review.unreviewed > 0 && `${review.unreviewed} not reviewed (review them, then textlate accept)`
 				].filter((reason): reason is string => Boolean(reason))
 				if (reasons.length) failed++
-				log(ui.note(reasons.length ? 'fail' : 'ok', `${name(snap.state)}  ${reasons.length ? reasons.join(` ${ui.glyphs.dot} `) : dim('up to date')}`))
-				for (const problem of snap.problems) log(ui.line(problem, 2))
+				log(ui.note(reasons.length ? 'fail' : 'ok', `${where(snap.run)}  ${reasons.length ? reasons.join(` ${ui.glyphs.dot} `) : dim('up to date')}`))
+				for (const { key, problem } of review.problems) log(ui.line(`${quote(key)} ${problem}`, 2))
 			}
 			blank()
 			log(
@@ -330,8 +276,35 @@ export const run = async (args: readonly string[], options: RunOptions = {}): Pr
 			return failed ? 1 : 0
 		}
 
-		const pending = snapshots.filter(snap => snap.untranslated.size > 0)
-		const outstanding = sum(pending.map(snap => snap.untranslated.size))
+		const issues = (snaps: readonly Snapshot[], failures: ReadonlyMap<string, string[]> = new Map()) => {
+			let listed = false
+			for (const snap of snaps) {
+				const found = [...snap.review.problems.map(({ key, problem }) => `${quote(key)} ${problem}`), ...(failures.get(snap.run.locale) ?? [])]
+				if (!found.length) continue
+				listed = true
+				log(ui.note('fail', where(snap.run)))
+				for (const issue of found) log(ui.line(issue, 2))
+			}
+			if (listed) blank()
+		}
+
+		if (command === 'accept') {
+			let accepted = 0
+			for (const localeRun of runs) accepted += acceptRun(localeRun, scan)
+			for (const localeRun of runs) writeRun(localeRun, scan)
+			log(
+				accepted
+					? ui.note('ok', `Marked ${plural(accepted, 'translation')} in ${plural(runs.length, 'locale')} as reviewed.`)
+					: ui.note('ok', 'Nothing to accept: every translation is reviewed already.')
+			)
+			const left = sum(runs.map(localeRun => reviewOf(localeRun).untranslated.size))
+			if (left) log(ui.note('info', `${plural(left, 'message')} still to translate first. Run "textlate translate".`))
+			blank()
+			return 0
+		}
+
+		const pending = snapshots.filter(snap => snap.review.untranslated.size > 0)
+		const outstanding = sum(pending.map(snap => snap.review.untranslated.size))
 
 		if (command === 'translate' && values['dry-run']) {
 			log(
@@ -343,30 +316,19 @@ export const run = async (args: readonly string[], options: RunOptions = {}): Pr
 			return 0
 		}
 
-		const written = states.filter(state => writeLocaleFile(state.file, state.messages)).length
-		const failures = new Map<string, string[]>()
-
-		/** What is wrong with each locale, under the file it is wrong in. */
-		const issues = (snaps: readonly Snapshot[]) => {
-			let listed = false
-			for (const snap of snaps) {
-				const found = [...snap.problems, ...(failures.get(snap.state.locale) ?? [])]
-				if (!found.length) continue
-				listed = true
-				log(ui.note('fail', name(snap.state)))
-				for (const issue of found) log(ui.line(issue, 2))
-			}
-			if (listed) blank()
-		}
+		const written = sum(runs.map(localeRun => writeRun(localeRun, scan)))
 
 		if (command === 'extract') {
 			issues(snapshots)
-			log(written ? ui.note('ok', `Updated ${plural(written, 'file')} in ${relative(cwd, dir) || '.'}.`) : ui.note('ok', 'Every file is already up to date.'))
+			const carried = sum(runs.map(localeRun => localeRun.sync.carried))
+			log(written ? ui.note('ok', `Updated ${plural(written, 'file')} in ${relative(cwd, project.dir) || '.'}.`) : ui.note('ok', 'Every file is already up to date.'))
+			if (carried) log(ui.note('info', `${plural(carried, 'changed message')} kept the old text's translation until "textlate translate" updates it.`))
 			if (outstanding) log(ui.note('info', `${plural(outstanding, 'message')} left to translate. Run "textlate translate".`))
 			blank()
 			return 0
 		}
 
+		const failures = new Map<string, string[]>()
 		if (pending.length) {
 			const missing = missingAISettings(ai, env)
 			if (missing.length) {
@@ -382,49 +344,56 @@ export const run = async (args: readonly string[], options: RunOptions = {}): Pr
 				env
 			}
 			const provider = createProvider(ai, runtime)
+			// One pool of requests for every locale: a large catalog keeps them all busy, a small one finishes at once.
+			const limit = limiter(Math.max(1, ai.concurrency ?? 8))
 
 			log(ui.note('info', `Translating ${plural(outstanding, 'message')} into ${plural(pending.length, 'locale')}${ai.model ? ` with ${bold(ai.model)}` : ''}…`))
 			// On a terminal one line keeps track of every locale at once; elsewhere each batch logs a line of its own.
 			const live = !options.log && Boolean(process.stdout.isTTY)
 			const status = createStatus({ log, interactive: live })
-			const progress = new Map(pending.map(snap => [snap.state.locale, { done: 0, size: snap.untranslated.size }]))
-			const show = (locale: string, done: number, size: number) => {
+			const progress = new Map(pending.map(snap => [snap.run.locale, { done: 0, size: snap.review.untranslated.size }]))
+			const report = (locale: string, done: number, size: number) => {
 				progress.set(locale, { done, size })
 				const finished = sum([...progress.values()].map(({ done: count }) => count))
 				const each = progress.size > 1 ? `  ${dim([...progress].map(([code, { done: count, size: all }]) => `${code} ${count}/${all}`).join(` ${ui.glyphs.dot} `))}` : ''
 				status.set(live ? ui.line(`${ui.bar(finished / outstanding)}  ${finished}/${outstanding}${each}`, 0) : ui.line(`${locale}  ${done}/${size} translated`, 1))
 			}
 
-			await pool(pending, ai.concurrency ?? 4, async ({ state, untranslated }) => {
-				let done = 0
-				try {
-					const outcome = await translateMessages({
-						provider,
-						sourceLocale,
-						locale: state.locale,
-						messages: untranslated,
-						instructions: ai.instructions,
-						batchSize: ai.batchSize,
-						onTranslated: translations => {
-							// Saved after every batch, so an interrupted run never pays for the same translation twice.
-							state.messages = { ...state.messages, ...translations }
-							writeLocaleFile(state.file, state.messages)
-							done += Object.keys(translations).length
-							show(state.locale, done, untranslated.size)
-						}
-					})
-					if (outcome.failed.length) failures.set(state.locale, outcome.failed.map(({ text, reason }) => `${quote(text)}: ${reason}`))
-				} catch (cause) {
-					failures.set(state.locale, [(cause as Error).message])
-				}
-			})
+			await Promise.all(
+				pending.map(async ({ run: localeRun, review }) => {
+					let done = 0
+					try {
+						const outcome = await translateMessages({
+							provider,
+							sourceLocale: project.sourceLocale,
+							locale: localeRun.locale,
+							messages: review.untranslated,
+							previous: review.previous,
+							instructions: ai.instructions,
+							glossary: project.glossary,
+							batchSize: ai.batchSize,
+							limit,
+							onTranslated: translations => {
+								// Saved after every batch, so an interrupted run never pays for the same translation twice.
+								recordTranslations(localeRun, translations)
+								writeRun(localeRun, scan)
+								done += Object.keys(translations).length
+								report(localeRun.locale, done, review.untranslated.size)
+							}
+						})
+						if (outcome.failed.length) failures.set(localeRun.locale, outcome.failed.map(({ text, reason }) => `${quote(text)}: ${reason}`))
+					} catch (cause) {
+						failures.set(localeRun.locale, [(cause as Error).message])
+					}
+				})
+			)
 			status.end()
 		}
 
-		const after = states.map(state => snapshot(scan.messages, state))
-		const left = sum(after.map(snap => snap.untranslated.size))
-		if (pending.length) catalogs(after, 'After translating')
-		issues(after)
+		const after = runs.map(snapshotOf)
+		const left = sum(after.map(snap => snap.review.untranslated.size))
+		if (pending.length) show('After translating', after)
+		issues(after, failures)
 		log(
 			left
 				? ui.note(failures.size ? 'fail' : 'warn', `${plural(outstanding - left, 'message')} translated, ${plural(left, 'message')} still missing.${failures.size ? ' Run "textlate translate" again to retry.' : ''}`)
@@ -443,3 +412,52 @@ export const run = async (args: readonly string[], options: RunOptions = {}): Pr
 		if (!options.prompt) prompt?.close()
 	}
 }
+
+/** Where one locale stands: what it has, what it misses and what is wrong with it. */
+interface Snapshot {
+	run: LocaleRun
+	review: Review
+	/** A file on disk is not what extract would write: messages were added, removed or reordered. */
+	outdated: boolean
+}
+
+/** The catalogs table: one row per locale, and a total row when there is more than one. */
+const catalogTable = (ui: ReturnType<typeof createRenderer>, project: Project, total: number) => {
+	const { dim, bold } = ui.theme
+	const gated = project.locales.some(project.reviewed)
+	const COLUMNS: Column[] = [
+		{ title: 'Locale' },
+		{ title: 'Language', flex: true, droppable: true },
+		{ title: 'Translated', align: 'right' },
+		{ title: 'Missing', align: 'right' },
+		{ title: 'Changed', align: 'right', optional: true },
+		{ title: 'Unreviewed', align: 'right', optional: true },
+		{ title: 'New', align: 'right', optional: true },
+		{ title: 'Unused', align: 'right', optional: true },
+		{ title: 'Invalid', align: 'right', optional: true }
+	]
+	// Zero is left blank: the table shows a dash, and a column that is zero everywhere is left out altogether.
+	const count = (value: number, sign = '', style: Styler = text => text) => (value ? style(`${sign}${value}`) : '')
+	const share = (done: number, all: number) => `${done}/${all}${all ? `  ${dim(`${Math.round((done / all) * 100)}%`)}` : ''}`
+	const cells = (locale: string, language: string, snaps: readonly Snapshot[]): string[] => {
+		const changed = sum(snaps.map(snap => snap.review.previous.size))
+		const missing = sum(snaps.map(snap => snap.review.untranslated.size)) - changed
+		return [
+			locale,
+			language,
+			share(snaps.length * total - missing - changed, snaps.length * total),
+			count(missing, '', ui.theme.yellow),
+			count(changed, '', ui.theme.yellow),
+			gated ? count(sum(snaps.filter(snap => project.reviewed(snap.run.locale)).map(snap => snap.review.unreviewed)), '', ui.theme.yellow) : '',
+			count(sum(snaps.map(snap => snap.run.sync.added)), '+'),
+			count(sum(snaps.map(snap => snap.run.sync.removed)), '-'),
+			count(sum(snaps.map(snap => snap.review.problems.length)), '', ui.theme.red)
+		]
+	}
+	return (snaps: readonly Snapshot[]) => {
+		const rows: Row[] = snaps.map(snap => ({ cells: cells(ui.theme.cyan(snap.run.locale), languageName(snap.run.locale), [snap]) }))
+		if (snaps.length > 1) rows.push({ rule: true, cells: cells(bold('Total'), dim(plural(snaps.length, 'locale')), snaps) })
+		return ui.table(COLUMNS, rows)
+	}
+}
+

@@ -14,10 +14,10 @@ const withOptions = new Map<string, unknown>()
  * e.g. from requests on a server) can't grow memory forever. A full cache starts over rather than refusing new
  * entries, so values in use are always cached again, e.g. a registered locale's translator after junk locales.
  */
-export const reuse = <K, V>(cache: Map<K, V>, key: K, create: (key: K) => V): V => {
+export const reuse = <K, V>(cache: Map<K, V>, key: K, create: (key: K) => V, limit = 500): V => {
 	let value = cache.get(key)
 	if (value === undefined) {
-		if (cache.size >= 500) cache.clear()
+		if (cache.size >= limit) cache.clear()
 		cache.set(key, (value = create(key)))
 	}
 	return value
@@ -37,6 +37,10 @@ const dateFormat = (locale: string, options?: Intl.DateTimeFormatOptions) =>
 		? configured('date', locale, options, () => new Intl.DateTimeFormat(locale, options))
 		: reuse(defaults.date, locale, () => new Intl.DateTimeFormat(locale))
 
+/** Options with the scope's time zone, unless they name their own. */
+const zoned = (options: Intl.DateTimeFormatOptions | undefined, timeZone: string | undefined) =>
+	timeZone && !options?.timeZone ? { ...options, timeZone } : options
+
 /** The plural category of `count` in `locale`, memoized. */
 export const pluralRules = (locale: string) =>
 	reuse(defaults.plural, locale, () => {
@@ -51,14 +55,22 @@ const formatNumber = (locale: string) =>
 		return memo((value: number | bigint) => format.format(value === 0 ? 0 : value))
 	})
 
-export const formatValue = (locale: string, value: ParamValue): string =>
-	typeof value === 'string' ? value : value instanceof Date ? dateFormat(locale).format(value) : formatNumber(locale)(value)
+/**
+ * A param's text: numbers and bigints with the locale's digits and separators, dates with its default date format,
+ * in `timeZone` when one is given (so a server renders the same date as the browser it's sent to).
+ */
+export const formatValue = (locale: string, value: ParamValue, timeZone?: string): string =>
+	typeof value === 'string'
+		? value
+		: value instanceof Date
+			? dateFormat(locale, zoned(undefined, timeZone)).format(value)
+			: formatNumber(locale)(value)
 
-export const createFormatter = (locale: string): Formatter => ({
+export const createFormatter = (locale: string, timeZone?: string): Formatter => ({
 	locale,
 	number: (value, options) =>
 		options ? configured('number', locale, options, () => new Intl.NumberFormat(locale, options)).format(value) : formatNumber(locale)(value),
-	date: (value, options) => dateFormat(locale, options).format(typeof value === 'string' ? new Date(value) : value),
+	date: (value, options) => dateFormat(locale, zoned(options, timeZone)).format(typeof value === 'string' ? new Date(value) : value),
 	relativeTime: (value, unit, options = {}) =>
 		configured('relative', locale, options, () => new Intl.RelativeTimeFormat(locale, options)).format(value, unit),
 	list: (items, options = {}) => configured('list', locale, options, () => new Intl.ListFormat(locale, options)).format(items),

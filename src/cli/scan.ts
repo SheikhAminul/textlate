@@ -1,6 +1,6 @@
 /// <reference types="node" />
 import { readdirSync, readFileSync, statSync } from 'node:fs'
-import { join, relative, resolve } from 'node:path'
+import { join, relative, resolve, sep } from 'node:path'
 import { keyOf, PLURAL_CATEGORIES } from '../message.js'
 import type { Message } from '../types.js'
 
@@ -19,6 +19,18 @@ export interface ScanResult {
 }
 
 export const DEFAULT_FUNCTIONS = ['translate', 'msg']
+
+export interface ScanOptions {
+	/** Functions whose first argument is a message. Default `translate` and `msg`. */
+	functions?: readonly string[] | undefined
+	/**
+	 * Object properties whose string values are messages: `label: 'Send a message'` with `['label']`. For text kept in
+	 * data — a catalog of apps, a menu, form fields — and translated where it's shown: `translate(app.label)`.
+	 */
+	properties?: readonly string[] | undefined
+	/** Files and directories to leave out, relative to `cwd`. */
+	exclude?: readonly string[] | undefined
+}
 
 // A string literal: quoted, or a template without `${}`.
 const LITERAL = /'(?:[^'\\\r\n]|\\[\s\S])*'|"(?:[^"\\\r\n]|\\[\s\S])*"|`(?:[^`\\$]|\\[\s\S]|\$(?!\{))*`/.source
@@ -74,12 +86,23 @@ const readMessage = (code: string): Message | string[] => {
  * scanCode(`<p>{translate('Hello, {name}!', { name })}</p>`).messages // Map { 'Hello, {name}!' => 'Hello, {name}!' }
  * ```
  */
-export const scanCode = (source: string, functions: readonly string[] = DEFAULT_FUNCTIONS, file = '') => {
+export const scanCode = (source: string, functions: readonly string[] = DEFAULT_FUNCTIONS, file = '', properties: readonly string[] = []) => {
 	// Comments become spaces, so positions and line numbers don't move.
 	const code = source.replace(COMMENTS, comment => comment.replace(/[^\n]/g, ' '))
 	const messages = new Map<string, Message>()
 	const warnings: ScanWarning[] = []
 	const warn = (index: number, message: string) => warnings.push({ file, line: code.slice(0, index).split('\n').length, message })
+
+	// Text in data comes first where it's declared, as a property's value written out in full. A value built from parts
+	// (`label: 'Hi ' + name`), a variable or a call is skipped: it isn't text that can be translated as it is.
+	if (properties.length) {
+		const names = properties.map(escapeRegExp).join('|')
+		const pattern = new RegExp(`(?<![\\w$.])(?:${names}|'(?:${names})'|"(?:${names})")\\s*:\\s*(${LITERAL})(?=\\s*(?:[,}\\])]|\\r?\\n|$))`, 'g')
+		for (const [, literal] of code.matchAll(pattern)) {
+			const text = unquote(literal!)
+			if (text.trim() && !messages.has(text)) messages.set(text, text)
+		}
+	}
 
 	const names = functions.map(escapeRegExp).join('|')
 	for (const call of code.matchAll(new RegExp(`(?<![\\w$])(?<!\\bfunction\\s+)(?:${names})\\s*\\(\\s*`, 'g'))) {
@@ -105,7 +128,8 @@ export const scanCode = (source: string, functions: readonly string[] = DEFAULT_
 	return { messages, warnings }
 }
 
-const sourceFiles = (path: string, found: string[]) => {
+const sourceFiles = (path: string, skip: (path: string) => boolean, found: string[]) => {
+	if (skip(path)) return found
 	if (!statSync(path).isDirectory()) {
 		found.push(path)
 		return found
@@ -113,19 +137,24 @@ const sourceFiles = (path: string, found: string[]) => {
 	for (const entry of readdirSync(path, { withFileTypes: true })) {
 		const child = join(path, entry.name)
 		if (entry.isDirectory()) {
-			if (!entry.name.startsWith('.') && !SKIPPED_DIRECTORIES.has(entry.name)) sourceFiles(child, found)
-		} else if (SOURCE_FILE.test(entry.name) && !/\.d\.[cm]?ts$/.test(entry.name)) found.push(child)
+			if (!entry.name.startsWith('.') && !SKIPPED_DIRECTORIES.has(entry.name)) sourceFiles(child, skip, found)
+		} else if (SOURCE_FILE.test(entry.name) && !/\.d\.[cm]?ts$/.test(entry.name) && !skip(child)) found.push(child)
 	}
 	return found
 }
 
-/** Scan files and directories (relative to `cwd`) for messages. `node_modules`, build output and dot-directories are skipped. */
-export const scanFiles = (paths: readonly string[], cwd: string, functions?: readonly string[]): ScanResult => {
-	const files = paths.flatMap(path => sourceFiles(resolve(cwd, path), [])).sort()
+/**
+ * Scan files and directories (relative to `cwd`) for messages. `node_modules`, build output and dot-directories are
+ * skipped, and so is anything under `options.exclude`.
+ */
+export const scanFiles = (paths: readonly string[], cwd: string, options: ScanOptions = {}): ScanResult => {
+	const excluded = (options.exclude ?? []).map(path => resolve(cwd, path))
+	const skip = (path: string) => excluded.some(prefix => path === prefix || path.startsWith(`${prefix}${sep}`))
+	const files = [...new Set(paths.flatMap(path => sourceFiles(resolve(cwd, path), skip, [])))].sort()
 	const messages = new Map<string, Message>()
 	const warnings: ScanWarning[] = []
 	for (const file of files) {
-		const result = scanCode(readFileSync(file, 'utf8'), functions, relative(cwd, file))
+		const result = scanCode(readFileSync(file, 'utf8'), options.functions, relative(cwd, file), options.properties)
 		for (const [key, message] of result.messages) {
 			if (typeof message !== 'string' || !messages.has(key)) messages.set(key, message)
 		}
