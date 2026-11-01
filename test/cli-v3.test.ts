@@ -181,6 +181,17 @@ describe('AI', () => {
 		expect([calls, saved]).toEqual([2, 1])
 	})
 
+	it('takes a custom translate function that answers without a promise', async () => {
+		const outcome = await translateMessages({
+			sourceLocale: 'en',
+			locale: 'es',
+			messages: new Map([['Hi', 'Hi']]),
+			provider: (() => ({ 1: 'Hola' })) as unknown as Parameters<typeof translateMessages>[0]['provider'],
+			onTranslated: () => {}
+		})
+		expect(outcome).toEqual({ translated: 1, failed: [] })
+	})
+
 	it('puts the glossary for the locale in the prompt, and checks terms to keep', () => {
 		const glossary = { TareAI: { keep: true }, workflow: { note: 'an automation', translations: { de: 'Workflow' } }, run: { translations: { fr: 'exécution' } } }
 		const prompt = buildPrompt('en', 'de', 'An automation platform.', glossary)

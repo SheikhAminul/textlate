@@ -314,18 +314,20 @@ export const translateMessages = async (task: TranslateTask): Promise<TranslateO
 		try {
 			answer = await limit(async () => {
 				if (stopped) throw stopped
-				return task.provider({
-					sourceLocale: task.sourceLocale,
-					locale: task.locale,
-					pluralCategories: pluralCategories(task.locale),
-					messages: Object.fromEntries([...ids].map(([id, { source }]) => [id, source])),
-					...(Object.keys(previous).length && { previous }),
-					prompt
-				}).catch(error => {
+				try {
+					return await task.provider({
+						sourceLocale: task.sourceLocale,
+						locale: task.locale,
+						pluralCategories: pluralCategories(task.locale),
+						messages: Object.fromEntries([...ids].map(([id, { source }]) => [id, source])),
+						...(Object.keys(previous).length && { previous }),
+						prompt
+					})
+				} catch (error) {
 					// Noted before the slot passes to the next batch, so that one isn't sent.
 					if (error instanceof ApiError) stopped ??= error
 					throw error
-				})
+				}
 			})
 		} catch (error) {
 			if (error instanceof ApiError) return
