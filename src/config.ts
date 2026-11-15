@@ -44,6 +44,16 @@ export interface AIConfig {
 	translate?: ((request: TranslateRequest) => Promise<Record<string, unknown>>) | undefined
 }
 
+/** A part of the app with translation files of its own. */
+export interface NamespaceConfig {
+	/** Its directory, e.g. `'app/[lang]/(site)'`. The namespace is the files in it and everything they import. */
+	path: string
+	/** Its name, in reports and `namespaces.json`. Default: the directory's name without brackets, e.g. `site`. */
+	name?: string | undefined
+	/** Where its `<locale>.json` files are. Default `<path>/locales`. */
+	dir?: string | undefined
+}
+
 /** Settings for the `textlate` command line, in `textlate.config.{ts,mts,js,mjs,json}`. */
 export interface Config {
 	/** The language the text in your code is written in. Default `'en'`. */
@@ -56,6 +66,20 @@ export interface Config {
 	include?: readonly string[] | undefined
 	/** Functions whose first argument is a message. Default `['translate', 'msg']`. */
 	functions?: readonly string[] | undefined
+	/**
+	 * Parts of the app that each decide their own languages, with the files in their `locales` directory: a namespace
+	 * with `fr.json` is in French, and one with none only in the source language. Each namespace's files hold just the
+	 * text it uses — its own and that of everything it imports — so a page loads no more than it needs.
+	 *
+	 * With namespaces, `<dir>/<locale>.json` is the main catalog: every translation, once, and the place to edit them.
+	 * The namespace files are written from it.
+	 */
+	namespaces?: readonly (string | NamespaceConfig)[] | undefined
+	/**
+	 * What a namespace's files hold: `'all'` its text (the default), or `'client'` only what its client modules use
+	 * (`'use client'` files and what they import), for apps that translate the rest on the server from the main catalog.
+	 */
+	namespaceMessages?: 'all' | 'client' | undefined
 	/** Keep translations of text that is no longer in the code. Default `false`. */
 	keepUnused?: boolean | undefined
 	/** How `textlate translate` translates. */

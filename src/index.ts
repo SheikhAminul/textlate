@@ -3,6 +3,7 @@ import type { I18n, Message } from './types.js'
 export { createI18n, type I18nConfig } from './core.js'
 export { cookieDetector, htmlLangDetector, navigatorDetector, queryDetector, storageDetector, type CookieOptions } from './detectors.js'
 export { getDirection, matchLocale, negotiateLocale, parseAcceptLanguage } from './locale.js'
+export { createRouting, type Alternates, type Routing, type RoutingConfig } from './routing.js'
 export type * from './types.js'
 
 /**
