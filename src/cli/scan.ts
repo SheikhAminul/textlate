@@ -105,7 +105,8 @@ export const scanCode = (source: string, functions: readonly string[] = DEFAULT_
 	return { messages, warnings }
 }
 
-const sourceFiles = (path: string, found: string[]) => {
+/** The source files at `path`: the file, or those in the directory and below. */
+export const sourceFiles = (path: string, found: string[]) => {
 	if (!statSync(path).isDirectory()) {
 		found.push(path)
 		return found
@@ -119,6 +120,14 @@ const sourceFiles = (path: string, found: string[]) => {
 	return found
 }
 
+/** Add `more` to `into`: a plural wins over the same text used as a plain string. */
+export const mergeMessages = (into: Map<string, Message>, more: ReadonlyMap<string, Message>) => {
+	for (const [key, message] of more) {
+		if (typeof message !== 'string' || !into.has(key)) into.set(key, message)
+	}
+	return into
+}
+
 /** Scan files and directories (relative to `cwd`) for messages. `node_modules`, build output and dot-directories are skipped. */
 export const scanFiles = (paths: readonly string[], cwd: string, functions?: readonly string[]): ScanResult => {
 	const files = paths.flatMap(path => sourceFiles(resolve(cwd, path), [])).sort()
@@ -126,9 +135,7 @@ export const scanFiles = (paths: readonly string[], cwd: string, functions?: rea
 	const warnings: ScanWarning[] = []
 	for (const file of files) {
 		const result = scanCode(readFileSync(file, 'utf8'), functions, relative(cwd, file))
-		for (const [key, message] of result.messages) {
-			if (typeof message !== 'string' || !messages.has(key)) messages.set(key, message)
-		}
+		mergeMessages(messages, result.messages)
 		warnings.push(...result.warnings)
 	}
 	return { messages, warnings, files: files.length }

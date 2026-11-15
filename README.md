@@ -347,6 +347,44 @@ A translation file maps each message to its translation, in the order the messag
 
 A plural is stored under its `other` text, and a message with context under `text // context`. An empty string (or empty plural form) means "not translated yet": the text in your code is shown instead. You can translate by hand, with AI, or both.
 
+## Sections
+
+A large app rarely needs every page in every language, and no page needs every message. With `sections`, each part of
+the app decides its own languages — by the files in its `locales` directory — and loads only the text it uses.
+
+```js
+// textlate.config.js
+export default defineConfig({
+	dir: 'locales', // the main catalog: every translation, once
+	sections: ['app/[lang]/(site)', 'app/[lang]/(auth)', 'app/(app)', 'app/(app)/admin'],
+	sectionMessages: 'client' // optional: section files hold only what the browser needs
+})
+```
+
+```sh
+npx textlate add fr,de,ja --sections site,auth   # the site and sign-in in three more languages; the app stays English
+npx textlate translate                           # translates what's new in the main catalog, then writes the sections
+```
+
+```
+locales/fr.json                  every French translation: edit here
+locales/sections.json            each section's path and languages, for routing (which pages exist in which languages)
+app/[lang]/(site)/locales/fr.json  just the text the site uses
+app/(app)/admin/locales/         empty: the admin pages are in English only
+```
+
+- **A section** is a directory: its files, and everything they import (relative imports and `tsconfig.json` `paths`),
+  so shared components bring their text with them. A section inside another (`admin` in `app`) is its own.
+- **Its languages** are the `<locale>.json` files in its `locales` directory. Add one with `textlate add`, remove one by
+  deleting the file. A section with none is in the source language only.
+- **The main catalog** (`dir`) holds each translation once, whatever uses it: what you review and edit, and what the
+  AI translates. Section files are written from it, so the same text never ends up translated two ways. A translation
+  written straight into a section file is taken into the main catalog.
+- **`sectionMessages: 'client'`** puts only the text of client modules (`'use client'` files and what they import) in
+  the section files: the bundle a page ships. Server Components translate from the main catalog on the server.
+  Server actions (`'use server'`) count as server code.
+- **`textlate check`** also fails when a section file or `sections.json` is out of date, so CI catches a forgotten run.
+
 ## Switching and loading locales
 
 ```ts
@@ -472,6 +510,25 @@ const Page = async ({ params }: { params: Promise<{ lang: string }> }) => {
 export default Page
 ```
 
+### Localized URLs, hreflang and canonical URLs
+
+`createRouting` builds a site's URLs: a prefix per language, none for the default. Its `alternates` is what
+`generateMetadata` returns for search engines — list only the languages a page is really in.
+
+```ts
+import { createRouting } from 'textlate'
+
+export const routing = createRouting({ locales: ['en', 'fr', 'ja'], defaultLocale: 'en' })
+
+routing.localize('/pricing', 'fr') // '/fr/pricing'
+routing.split('/ja/pricing') // { locale: 'ja', path: '/pricing' }
+
+export const generateMetadata = async ({ params }) => ({
+	alternates: routing.alternates('/pricing', { locale: (await params).lang, available: ['fr', 'ja'], origin: 'https://example.com' })
+	// { canonical: 'https://example.com/fr/pricing', languages: { en, fr, ja, 'x-default' } }
+})
+```
+
 How it fits together:
 - **`textlate`** is server-safe and imports no client hooks, so you can use it in Server Components, `generateMetadata`, route handlers and the proxy.
 - **`textlate/react`** is marked `'use client'`.
@@ -488,6 +545,7 @@ How it fits together:
 | `createI18n(config)` | Creates an instance. Config: `locales`, `sourceLocale?` (default `'en'`), `locale?`, `fallbacks?` (e.g. `{ 'pt-BR': ['pt-PT'] }`), `detectors?`, `onUntranslated?` |
 | `msg(message)` | Marks a message chosen at runtime for the CLI, and returns it unchanged |
 | `negotiateLocale(acceptLanguage, locales, fallback)` | Best locale for an `Accept-Language` header |
+| `createRouting({ locales, defaultLocale })` | Localized URLs: `localize`, `split`, `match`, and `alternates` (canonical and `hreflang`) |
 | `matchLocale(requested, locales)` | BCP 47 lookup: exact, then shorter tags, then same language |
 | `parseAcceptLanguage(header)` | Locales ordered by `q` |
 | `getDirection(locale)` | `'ltr'` or `'rtl'` |
