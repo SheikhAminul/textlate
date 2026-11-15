@@ -16,7 +16,7 @@ npm i textlate   (requires React 19+, ESM only; the CLI needs Node 20+)
 - `textlate/react`: `'use client'`. `I18nProvider`, `useI18n`.
 - `textlate/config`: `defineConfig` for `textlate.config.js`.
 - `textlate` command: `extract`, `translate`, `check`, `add`.
-- Sections (`sections` in `textlate.config.js`): each directory of the app has its own `locales/<locale>.json` — its languages are the files present — holding only the text it and its imports use (`sectionMessages: 'client'`: only client modules'). The main catalog (`dir`) holds every translation once and is where they're edited; section files and `sections.json` are written from it. `textlate add fr --sections site` adds a language.
+- Namespaces (`namespaces` in `textlate.config.js`): each directory of the app has its own `locales/<locale>.json` — its languages are the files present — holding only the text it and its imports use (`namespaceMessages: 'client'`: only client modules'). The main catalog (`dir`) holds every translation once and is where they're edited; namespace files and `namespaces.json` are written from it. `textlate add fr --namespaces site` adds a language.
 
 ## Setup (React)
 

@@ -1,7 +1,7 @@
 /// <reference types="node" />
 import { existsSync, readdirSync, readFileSync } from 'node:fs'
 import { basename, join, relative, resolve, sep } from 'node:path'
-import type { SectionConfig } from '../config.js'
+import type { NamespaceConfig } from '../config.js'
 import type { Message } from '../types.js'
 import { isTranslated, placeholder, type LocaleMessages } from './catalog.js'
 import { isInside, readAliases, walk } from './graph.js'
@@ -14,7 +14,7 @@ export const LOCALE_FILE = /^([a-z]{2,3}(?:[-_][a-z\d]+)*)\.json$/i
 export const localesIn = (dir: string, sourceLocale?: string) =>
 	(existsSync(dir) ? readdirSync(dir).flatMap(name => LOCALE_FILE.exec(name)?.[1] ?? []) : []).filter(locale => locale !== sourceLocale).sort()
 
-export interface Section {
+export interface Namespace {
 	name: string
 	/** Its directory, absolute. */
 	path: string
@@ -22,7 +22,7 @@ export interface Section {
 	dir: string
 	/** Its languages: the files in `dir`. */
 	locales: string[]
-	/** Every message the section uses, the server's and the browser's: what the main catalog must translate for it. */
+	/** Every message the namespace uses, the server's and the browser's: what the main catalog must translate for it. */
 	used: Map<string, Message>
 	/** What its files hold: `used`, or only the client modules' messages. */
 	messages: Map<string, Message>
@@ -34,23 +34,23 @@ export interface Section {
 const nameOf = (path: string) => basename(path).replace(/[()[\]@.]/g, '') || 'root'
 
 /**
- * The sections in the config, read: their files (their own, and everything those import), the messages in them and
- * the languages their `locales` directories have. A section's own files stop at a section nested inside it.
+ * The namespaces in the config, read: their files (their own, and everything those import), the messages in them and
+ * the languages their `locales` directories have. A namespace's own files stop at a namespace nested inside it.
  */
-export const readSections = (
-	configs: readonly (string | SectionConfig)[],
+export const readNamespaces = (
+	configs: readonly (string | NamespaceConfig)[],
 	options: { cwd: string; sourceLocale: string; functions?: readonly string[] | undefined; only: 'all' | 'client' }
 ) => {
 	const { cwd, sourceLocale, functions, only } = options
 	const resolved = configs.map(config => {
 		const { path, name, dir } = typeof config === 'string' ? { path: config, name: undefined, dir: undefined } : config
 		const absolute = resolve(cwd, path)
-		if (!existsSync(absolute)) throw new Error(`Section "${path}" isn't there. Fix \`sections\` in textlate.config.js.`)
+		if (!existsSync(absolute)) throw new Error(`Namespace "${path}" isn't there. Fix \`namespaces\` in textlate.config.js.`)
 		return { name: name ?? nameOf(absolute), path: absolute, dir: resolve(cwd, dir ?? join(path, 'locales')) }
 	})
 	const names = new Set<string>()
 	for (const { name, path } of resolved) {
-		if (names.has(name)) throw new Error(`Two sections are called "${name}". Give one a \`name\`: { path: '${relative(cwd, path)}', name: '…' }.`)
+		if (names.has(name)) throw new Error(`Two namespaces are called "${name}". Give one a \`name\`: { path: '${relative(cwd, path)}', name: '…' }.`)
 		names.add(name)
 	}
 
@@ -72,37 +72,37 @@ export const readSections = (
 		return merged
 	}
 
-	const sections: Section[] = resolved.map(section => {
-		const nested = resolved.filter(other => other !== section && other.path !== section.path && isInside(other.path, section.path))
-		const own = sourceFiles(section.path, []).filter(file => !nested.some(other => isInside(file, other.path)) && !isInside(file, section.dir))
+	const namespaces: Namespace[] = resolved.map(namespace => {
+		const nested = resolved.filter(other => other !== namespace && other.path !== namespace.path && isInside(other.path, namespace.path))
+		const own = sourceFiles(namespace.path, []).filter(file => !nested.some(other => isInside(file, other.path)) && !isInside(file, namespace.dir))
 		const graph = walk(own, aliases, cache)
 		const used = messagesOf(graph.files)
 		return {
-			...section,
-			locales: localesIn(section.dir, sourceLocale),
+			...namespace,
+			locales: localesIn(namespace.dir, sourceLocale),
 			used,
 			messages: only === 'client' ? messagesOf(graph.clientFiles) : used,
 			files: graph.files.length
 		}
 	})
-	return { sections, warnings }
+	return { namespaces, warnings }
 }
 
-/** The messages the main catalog holds for `locale`: everything the sections in that language use, then `extra`. */
-export const mainMessages = (sections: readonly Section[], locale: string, extra?: ReadonlyMap<string, Message>) => {
+/** The messages the main catalog holds for `locale`: everything the namespaces in that language use, then `extra`. */
+export const mainMessages = (namespaces: readonly Namespace[], locale: string, extra?: ReadonlyMap<string, Message>) => {
 	const messages = new Map<string, Message>()
-	for (const section of sections) if (section.locales.includes(locale)) mergeMessages(messages, section.used)
+	for (const namespace of namespaces) if (namespace.locales.includes(locale)) mergeMessages(messages, namespace.used)
 	if (extra) mergeMessages(messages, extra)
 	return messages
 }
 
 /**
- * Translations found in a section's files and not (yet) in the main catalog — written there by hand, or by an older
+ * Translations found in a namespace's files and not (yet) in the main catalog — written there by hand, or by an older
  * setup — are taken into it, so nothing translated is ever lost. Where both have one, the main catalog's wins.
  */
-export const adopt = (main: LocaleMessages, sectionFiles: readonly LocaleMessages[]): LocaleMessages => {
+export const adopt = (main: LocaleMessages, namespaceFiles: readonly LocaleMessages[]): LocaleMessages => {
 	let adopted: Record<string, unknown> | undefined
-	for (const file of sectionFiles) {
+	for (const file of namespaceFiles) {
 		for (const [key, value] of Object.entries(file)) {
 			if (isTranslated(value) && !isTranslated(Object.hasOwn(main, key) ? main[key] : undefined)) (adopted ??= { ...main })[key] = value
 		}
@@ -110,19 +110,19 @@ export const adopt = (main: LocaleMessages, sectionFiles: readonly LocaleMessage
 	return adopted ?? main
 }
 
-/** A section's file for `locale`: its messages, in its order, translated from the main catalog. */
-export const sectionFile = (section: Section, main: LocaleMessages, locale: string): LocaleMessages => {
+/** A namespace's file for `locale`: its messages, in its order, translated from the main catalog. */
+export const namespaceFile = (namespace: Namespace, main: LocaleMessages, locale: string): LocaleMessages => {
 	const entries = new Map<string, unknown>()
-	for (const [key, source] of section.messages) entries.set(key, Object.hasOwn(main, key) ? main[key] : placeholder(source, locale))
+	for (const [key, source] of namespace.messages) entries.set(key, Object.hasOwn(main, key) ? main[key] : placeholder(source, locale))
 	return Object.fromEntries(entries) as LocaleMessages
 }
 
-/** `sections.json`: each section's directory and languages, for an app's routing (which paths exist in which languages). */
-export const manifest = (sections: readonly Section[], sourceLocale: string, cwd: string) =>
+/** `namespaces.json`: each namespace's directory and languages, for an app's routing (which paths exist in which languages). */
+export const manifest = (namespaces: readonly Namespace[], sourceLocale: string, cwd: string) =>
 	`${JSON.stringify(
 		{
 			sourceLocale,
-			sections: Object.fromEntries(sections.map(section => [section.name, { path: relative(cwd, section.path).split(sep).join('/'), locales: section.locales }]))
+			namespaces: Object.fromEntries(namespaces.map(namespace => [namespace.name, { path: relative(cwd, namespace.path).split(sep).join('/'), locales: namespace.locales }]))
 		},
 		null,
 		2

@@ -3,7 +3,7 @@ import { existsSync, readFileSync, statSync } from 'node:fs'
 import { dirname, join, relative, resolve, sep } from 'node:path'
 
 /**
- * Following imports from a section's own files to everything they use, so a section's translation file holds the
+ * Following imports from a namespace's own files to everything they use, so a namespace's translation file holds the
  * text of the shared components it renders as well as its own. Only what can be read without running the code:
  * relative imports, the `paths` aliases of `tsconfig.json` (or `jsconfig.json`), and literal `import()`. Packages
  * (bare specifiers) are left out. A file that starts with `'use client'` — and everything it imports — is a client
@@ -135,7 +135,7 @@ export interface Graph {
 }
 
 /**
- * Everything `entries` use, and which of it is client code. Files are read once per `cache`, so sections that share
+ * Everything `entries` use, and which of it is client code. Files are read once per `cache`, so namespaces that share
  * components share the work.
  */
 export const walk = (entries: readonly string[], aliases: readonly Alias[], cache = new Map<string, { code: string; imports: string[] }>()): Graph => {

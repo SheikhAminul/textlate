@@ -45,10 +45,10 @@ export interface AIConfig {
 }
 
 /** A part of the app with translation files of its own. */
-export interface SectionConfig {
-	/** Its directory, e.g. `'app/[lang]/(site)'`. The section is the files in it and everything they import. */
+export interface NamespaceConfig {
+	/** Its directory, e.g. `'app/[lang]/(site)'`. The namespace is the files in it and everything they import. */
 	path: string
-	/** Its name, in reports and `sections.json`. Default: the directory's name without brackets, e.g. `site`. */
+	/** Its name, in reports and `namespaces.json`. Default: the directory's name without brackets, e.g. `site`. */
 	name?: string | undefined
 	/** Where its `<locale>.json` files are. Default `<path>/locales`. */
 	dir?: string | undefined
@@ -67,19 +67,19 @@ export interface Config {
 	/** Functions whose first argument is a message. Default `['translate', 'msg']`. */
 	functions?: readonly string[] | undefined
 	/**
-	 * Parts of the app that each decide their own languages, with the files in their `locales` directory: a section
-	 * with `fr.json` is in French, and one with none only in the source language. Each section's files hold just the
+	 * Parts of the app that each decide their own languages, with the files in their `locales` directory: a namespace
+	 * with `fr.json` is in French, and one with none only in the source language. Each namespace's files hold just the
 	 * text it uses — its own and that of everything it imports — so a page loads no more than it needs.
 	 *
-	 * With sections, `<dir>/<locale>.json` is the main catalog: every translation, once, and the place to edit them.
-	 * The section files are written from it.
+	 * With namespaces, `<dir>/<locale>.json` is the main catalog: every translation, once, and the place to edit them.
+	 * The namespace files are written from it.
 	 */
-	sections?: readonly (string | SectionConfig)[] | undefined
+	namespaces?: readonly (string | NamespaceConfig)[] | undefined
 	/**
-	 * What a section's files hold: `'all'` its text (the default), or `'client'` only what its client modules use
+	 * What a namespace's files hold: `'all'` its text (the default), or `'client'` only what its client modules use
 	 * (`'use client'` files and what they import), for apps that translate the rest on the server from the main catalog.
 	 */
-	sectionMessages?: 'all' | 'client' | undefined
+	namespaceMessages?: 'all' | 'client' | undefined
 	/** Keep translations of text that is no longer in the code. Default `false`. */
 	keepUnused?: boolean | undefined
 	/** How `textlate translate` translates. */

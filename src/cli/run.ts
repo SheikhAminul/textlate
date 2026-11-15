@@ -9,7 +9,7 @@ import { createProvider, languageName, translateMessages, type Runtime } from '.
 import { checkTranslation, isTranslated, readLocaleFile, serialize, syncMessages, writeLocaleFile, type LocaleFile, type LocaleMessages } from './catalog.js'
 import { Cancelled, createPrompter, isInteractive, type Prompter } from './prompt.js'
 import { scanFiles, type ScanWarning } from './scan.js'
-import { adopt, localesIn, LOCALE_FILE, mainMessages, manifest, readSections, sectionFile, type Section } from './sections.js'
+import { adopt, localesIn, LOCALE_FILE, mainMessages, manifest, readNamespaces, namespaceFile, type Namespace } from './namespaces.js'
 import { missingAISettings, setupAI, setupHint } from './setup.js'
 import { createRenderer, createStatus, type Column, type Row, type Styler } from './ui.js'
 
@@ -21,7 +21,7 @@ Commands:
   extract    Find the messages in your code and update <dir>/<locale>.json
   translate  Extract, then translate what isn't translated yet with AI
   check      Fail if a locale file is out of date, untranslated or invalid (for CI)
-  add        Add languages: textlate add fr,de (to some sections only: --sections site,auth)
+  add        Add languages: textlate add fr,de (to some namespaces only: --namespaces site,auth)
   setup      Choose the AI provider, model and API key, and save them
 
 Arguments:
@@ -33,7 +33,7 @@ Options:
   -s, --source <locale>    Language the text in your code is written in (default: en)
   -l, --locales <list>     Locales to translate into, e.g. es,bn (default: each <locale>.json in --dir)
   -f, --functions <list>   Functions whose first argument is a message (default: translate,msg)
-      --sections <list>    add: the sections to add the languages to (default: every section)
+      --namespaces <list>  add: the namespaces to add the languages to (default: every namespace)
       --provider <name>    AI provider: anthropic (default), openai or google
       --model <id>         AI model (default for anthropic: claude-opus-5-5)
       --keep-unused        Keep translations of text that is no longer in the code
@@ -48,7 +48,7 @@ With none of them set, translate asks which provider, model and key to use, and 
 Examples:
   textlate setup
   textlate extract --locales es,bn
-  textlate add ja --sections site
+  textlate add ja --namespaces site
   textlate translate
   textlate check`
 
@@ -189,7 +189,7 @@ export const run = async (args: readonly string[], options: RunOptions = {}): Pr
 				source: { type: 'string', short: 's' },
 				locales: { type: 'string', short: 'l' },
 				functions: { type: 'string', short: 'f' },
-				sections: { type: 'string' },
+				namespaces: { type: 'string' },
 				provider: { type: 'string' },
 				model: { type: 'string' },
 				'keep-unused': { type: 'boolean' },
@@ -242,7 +242,7 @@ export const run = async (args: readonly string[], options: RunOptions = {}): Pr
 		const sourceLocale = values.source ?? config.sourceLocale ?? 'en'
 		const dir = resolve(cwd, values.dir ?? config.dir ?? 'src/locales')
 		const functions = list(values.functions) ?? config.functions
-		const withSections = Boolean(config.sections?.length)
+		const withNamespaces = Boolean(config.namespaces?.length)
 
 		if (command === 'add') {
 			const requested = [...new Set(rest.flatMap(item => item.split(',')).map(item => item.trim()).filter(Boolean))]
@@ -257,16 +257,16 @@ export const run = async (args: readonly string[], options: RunOptions = {}): Pr
 				if (!valid) throw new UsageError(`"${locale}" isn't a language code. Use one like fr, de or pt-BR.`)
 				if (locale === sourceLocale) throw new UsageError(`"${sourceLocale}" is the source locale: the text in your code. It needs no file.`)
 			}
-			const wanted = list(values.sections)
+			const wanted = list(values.namespaces)
 			let targets = [dir]
-			if (withSections) {
-				const all = config.sections!.map(section => (typeof section === 'string' ? { path: section } : section))
-				const { sections } = readSections(all, { cwd, sourceLocale, functions, only: 'all' })
+			if (withNamespaces) {
+				const all = config.namespaces!.map(namespace => (typeof namespace === 'string' ? { path: namespace } : namespace))
+				const { namespaces } = readNamespaces(all, { cwd, sourceLocale, functions, only: 'all' })
 				for (const name of wanted ?? []) {
-					if (!sections.some(section => section.name === name)) throw new UsageError(`No section is called "${name}". The sections are: ${sections.map(section => section.name).join(', ')}.`)
+					if (!namespaces.some(namespace => namespace.name === name)) throw new UsageError(`No namespace is called "${name}". The namespaces are: ${namespaces.map(namespace => namespace.name).join(', ')}.`)
 				}
-				targets = sections.filter(section => !wanted || wanted.includes(section.name)).map(section => section.dir)
-			} else if (wanted) throw new UsageError('--sections needs `sections` in textlate.config.js.')
+				targets = namespaces.filter(namespace => !wanted || wanted.includes(namespace.name)).map(namespace => namespace.dir)
+			} else if (wanted) throw new UsageError('--namespaces needs `namespaces` in textlate.config.js.')
 			blank()
 			for (const target of targets) {
 				for (const locale of requested) {
@@ -278,35 +278,35 @@ export const run = async (args: readonly string[], options: RunOptions = {}): Pr
 			}
 		}
 
-		let sections: Section[] = []
+		let namespaces: Namespace[] = []
 		let warnings: ScanWarning[] = []
 		let extra: ReadonlyMap<string, Message> | undefined
 		let files = 0
 		let available: string[]
-		if (withSections) {
-			const read = readSections(config.sections!, { cwd, sourceLocale, functions, only: config.sectionMessages ?? 'all' })
-			sections = read.sections
+		if (withNamespaces) {
+			const read = readNamespaces(config.namespaces!, { cwd, sourceLocale, functions, only: config.namespaceMessages ?? 'all' })
+			namespaces = read.namespaces
 			warnings = read.warnings
-			files = new Set(sections.flatMap(section => section.files)).size
-			available = [...new Set([...sections.flatMap(section => section.locales), ...(config.locales ?? [])])].sort()
+			files = new Set(namespaces.flatMap(namespace => namespace.files)).size
+			available = [...new Set([...namespaces.flatMap(namespace => namespace.locales), ...(config.locales ?? [])])].sort()
 		} else available = config.locales ? [...config.locales] : localesIn(dir, sourceLocale)
 		const locales = (command === 'add' ? undefined : list(values.locales)) ?? available
 		if (!locales.length) {
 			throw new UsageError(
-				withSections
-					? 'No section has a language yet. Add one with "textlate add fr" (or "textlate add fr --sections site").'
+				withNamespaces
+					? 'No namespace has a language yet. Add one with "textlate add fr" (or "textlate add fr --namespaces site").'
 					: `No locales to translate into. Pass --locales es,fr, add \`locales: ['es', 'fr']\` to textlate.config.js, or create ${relative(cwd, join(dir, 'es.json'))}.`
 			)
 		}
 		if (locales.includes(sourceLocale)) throw new UsageError(`"${sourceLocale}" is the source locale: the text in your code. It needs no file.`)
-		if (withSections) {
+		if (withNamespaces) {
 			for (const locale of locales) {
-				if (!available.includes(locale)) throw new UsageError(`No section is in ${locale} yet. Add it with "textlate add ${locale}".`)
+				if (!available.includes(locale)) throw new UsageError(`No namespace is in ${locale} yet. Add it with "textlate add ${locale}".`)
 			}
 		}
 
-		// With sections, `include` (or paths on the command line) adds text the sections don't import, e.g. emails.
-		const include = paths.length ? paths : (config.include ?? (withSections ? [] : ['src']))
+		// With namespaces, `include` (or paths on the command line) adds text the namespaces don't import, e.g. emails.
+		const include = paths.length ? paths : (config.include ?? (withNamespaces ? [] : ['src']))
 		for (const path of include) {
 			if (!existsSync(resolve(cwd, path))) {
 				throw new UsageError(`Nothing to scan at "${path}". Pass the files or directories that hold your code, or set \`include\` in textlate.config.js.`)
@@ -322,9 +322,9 @@ export const run = async (args: readonly string[], options: RunOptions = {}): Pr
 		const keepUnused = values['keep-unused'] ?? config.keepUnused
 		const states: LocaleState[] = locales.map(locale => {
 			const file = readLocaleFile(join(dir, `${locale}.json`))
-			const sources = withSections ? mainMessages(sections, locale, extra) : extra!
-			const existing = withSections
-				? adopt(file.messages, sections.filter(section => section.locales.includes(locale)).map(section => readLocaleFile(join(section.dir, `${locale}.json`)).messages))
+			const sources = withNamespaces ? mainMessages(namespaces, locale, extra) : extra!
+			const existing = withNamespaces
+				? adopt(file.messages, namespaces.filter(namespace => namespace.locales.includes(locale)).map(namespace => readLocaleFile(join(namespace.dir, `${locale}.json`)).messages))
 				: file.messages
 			return { locale, file, sources, ...syncMessages(sources, existing, locale, keepUnused) }
 		})
@@ -332,27 +332,27 @@ export const run = async (args: readonly string[], options: RunOptions = {}): Pr
 		const name = (state: LocaleState) => relative(cwd, state.file.path)
 		const snapshots = states.map(state => snapshot(state))
 
-		/** The section files, and `sections.json`, as the main catalog says they should be: those that aren't yet. */
-		const sectionChanges = () => {
+		/** The namespace files, and `namespaces.json`, as the main catalog says they should be: those that aren't yet. */
+		const namespaceChanges = () => {
 			const changes: { file: LocaleFile; messages: LocaleMessages | undefined; content: string }[] = []
-			for (const section of sections) {
+			for (const namespace of namespaces) {
 				for (const state of states) {
-					if (!section.locales.includes(state.locale)) continue
-					const file = readLocaleFile(join(section.dir, `${state.locale}.json`))
-					const messages = sectionFile(section, state.messages, state.locale)
+					if (!namespace.locales.includes(state.locale)) continue
+					const file = readLocaleFile(join(namespace.dir, `${state.locale}.json`))
+					const messages = namespaceFile(namespace, state.messages, state.locale)
 					const content = serialize(file, messages)
 					if (content !== file.raw) changes.push({ file, messages, content })
 				}
 			}
-			if (withSections) {
-				const file = readLocaleFile(join(dir, 'sections.json'))
-				const content = manifest(sections, sourceLocale, cwd)
+			if (withNamespaces) {
+				const file = readLocaleFile(join(dir, 'namespaces.json'))
+				const content = manifest(namespaces, sourceLocale, cwd)
 				if (content !== file.raw) changes.push({ file, messages: undefined, content })
 			}
 			return changes
 		}
-		const writeSections = () => {
-			const changes = sectionChanges()
+		const writeNamespaces = () => {
+			const changes = namespaceChanges()
 			for (const { file, messages, content } of changes) {
 				if (messages) writeLocaleFile(file, messages)
 				else writeText(file.path, content)
@@ -369,7 +369,7 @@ export const run = async (args: readonly string[], options: RunOptions = {}): Pr
 				['Source', sourceLocale, languageName(sourceLocale)],
 				['Locales', String(locales.length), locales.join(', ')],
 				['Messages', String(total), `in ${plural(files, 'file')}`],
-				withSections ? ['Files', join(relative(cwd, dir) || '.', '<locale>.json'), `and each section's ${join('locales', '<locale>.json')}`] : ['Files', join(relative(cwd, dir) || '.', '<locale>.json')],
+				withNamespaces ? ['Files', join(relative(cwd, dir) || '.', '<locale>.json'), `and each namespace's ${join('locales', '<locale>.json')}`] : ['Files', join(relative(cwd, dir) || '.', '<locale>.json')],
 				Boolean(configFile) && ['Config', relative(cwd, configFile!)]
 			])
 		)
@@ -377,9 +377,9 @@ export const run = async (args: readonly string[], options: RunOptions = {}): Pr
 			blank()
 			for (const warning of warnings) log(ui.note('warn', `${warning.file}:${warning.line}  ${warning.message}`))
 		}
-		if (withSections) {
+		if (withNamespaces) {
 			for (const locale of localesIn(dir, sourceLocale)) {
-				if (!available.includes(locale)) log(ui.note('warn', `${relative(cwd, join(dir, `${locale}.json`))}: no section is in this language any more. Delete it, or add it to a section with "textlate add ${locale} --sections …".`))
+				if (!available.includes(locale)) log(ui.note('warn', `${relative(cwd, join(dir, `${locale}.json`))}: no namespace is in this language any more. Delete it, or add it to a namespace with "textlate add ${locale} --namespaces …".`))
 			}
 		}
 
@@ -418,16 +418,16 @@ export const run = async (args: readonly string[], options: RunOptions = {}): Pr
 			lines(ui.table(COLUMNS, rows))
 			blank()
 		}
-		catalogs(snapshots, withSections ? 'Main catalog' : 'Catalogs')
-		if (withSections) {
-			log(ui.heading('Sections'))
+		catalogs(snapshots, withNamespaces ? 'Main catalog' : 'Catalogs')
+		if (withNamespaces) {
+			log(ui.heading('Namespaces'))
 			blank()
-			const SECTION_COLUMNS: Column[] = [{ title: 'Section' }, { title: 'Languages', flex: true }, { title: 'Messages', align: 'right' }, { title: 'Files', align: 'right', droppable: true }]
+			const NAMESPACE_COLUMNS: Column[] = [{ title: 'Namespace' }, { title: 'Languages', flex: true }, { title: 'Messages', align: 'right' }, { title: 'Files', align: 'right', droppable: true }]
 			lines(
 				ui.table(
-					SECTION_COLUMNS,
-					sections.map(section => ({
-						cells: [ui.theme.cyan(section.name), section.locales.length ? section.locales.join(', ') : dim(`${sourceLocale} only`), String(section.messages.size), String(section.files)]
+					NAMESPACE_COLUMNS,
+					namespaces.map(namespace => ({
+						cells: [ui.theme.cyan(namespace.name), namespace.locales.length ? namespace.locales.join(', ') : dim(`${sourceLocale} only`), String(namespace.messages.size), String(namespace.files)]
 					}))
 				)
 			)
@@ -446,14 +446,14 @@ export const run = async (args: readonly string[], options: RunOptions = {}): Pr
 				log(ui.note(reasons.length ? 'fail' : 'ok', `${name(snap.state)}  ${reasons.length ? reasons.join(` ${ui.glyphs.dot} `) : dim('up to date')}`))
 				for (const problem of snap.problems) log(ui.line(problem, 2))
 			}
-			// A section file can only be out of date: its translations are the main catalog's.
-			const stale = sectionChanges()
+			// A namespace file can only be out of date: its translations are the main catalog's.
+			const stale = namespaceChanges()
 			for (const { file } of stale) log(ui.note('fail', `${relative(cwd, file.path)}  out of date (run textlate extract)`))
 			blank()
 			const translations = sum(snapshots.map(snap => snap.state.sources.size))
 			log(
 				failed || stale.length
-					? ui.note('fail', [failed && `${failed} of ${plural(snapshots.length, 'locale')} ${failed === 1 ? 'needs' : 'need'} attention.`, stale.length && `${plural(stale.length, 'section file')} out of date.`].filter(Boolean).join(' '))
+					? ui.note('fail', [failed && `${failed} of ${plural(snapshots.length, 'locale')} ${failed === 1 ? 'needs' : 'need'} attention.`, stale.length && `${plural(stale.length, 'namespace file')} out of date.`].filter(Boolean).join(' '))
 					: ui.note('ok', `${plural(snapshots.length, 'locale')} up to date, ${plural(translations, 'translation')} in place.`)
 			)
 			blank()
@@ -473,7 +473,7 @@ export const run = async (args: readonly string[], options: RunOptions = {}): Pr
 			return 0
 		}
 
-		const written = states.filter(state => writeLocaleFile(state.file, state.messages)).length + writeSections()
+		const written = states.filter(state => writeLocaleFile(state.file, state.messages)).length + writeNamespaces()
 		const failures = new Map<string, string[]>()
 
 		/** What is wrong with each locale, under the file it is wrong in. */
@@ -491,7 +491,7 @@ export const run = async (args: readonly string[], options: RunOptions = {}): Pr
 
 		if (command === 'extract' || command === 'add') {
 			issues(snapshots)
-			log(written ? ui.note('ok', withSections ? `Updated ${plural(written, 'file')}.` : `Updated ${plural(written, 'file')} in ${relative(cwd, dir) || '.'}.`) : ui.note('ok', 'Every file is already up to date.'))
+			log(written ? ui.note('ok', withNamespaces ? `Updated ${plural(written, 'file')}.` : `Updated ${plural(written, 'file')} in ${relative(cwd, dir) || '.'}.`) : ui.note('ok', 'Every file is already up to date.'))
 			if (outstanding) log(ui.note('info', `${plural(outstanding, 'message')} left to translate. Run "textlate translate".`))
 			blank()
 			return 0
@@ -551,7 +551,7 @@ export const run = async (args: readonly string[], options: RunOptions = {}): Pr
 			status.end()
 		}
 
-		writeSections()
+		writeNamespaces()
 		const after = states.map(state => snapshot(state))
 		const left = sum(after.map(snap => snap.untranslated.size))
 		if (pending.length) catalogs(after, 'After translating')

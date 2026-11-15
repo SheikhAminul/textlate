@@ -20,7 +20,7 @@ const cli = async (args: string[]) => {
 }
 
 beforeEach(() => {
-	cwd = mkdtempSync(join(tmpdir(), 'textlate-sections-'))
+	cwd = mkdtempSync(join(tmpdir(), 'textlate-namespaces-'))
 })
 afterEach(() => rmSync(cwd, { recursive: true, force: true }))
 
@@ -79,10 +79,10 @@ describe('the import graph', () => {
 	})
 })
 
-describe('sections', () => {
+describe('namespaces', () => {
 	beforeEach(() => {
 		write('tsconfig.json', JSON.stringify({ compilerOptions: { paths: { '@/*': ['./*'] } } }))
-		write('textlate.config.json', JSON.stringify({ dir: 'locales', sections: ['app/(site)', 'app/(app)', 'app/(app)/admin'], sectionMessages: 'client' }))
+		write('textlate.config.json', JSON.stringify({ dir: 'locales', namespaces: ['app/(site)', 'app/(app)', 'app/(app)/admin'], namespaceMessages: 'client' }))
 		write('app/(site)/page.tsx', `import { Header } from '@/components/Header'\nimport { Hero } from './Hero'\nexport default () => translate('Welcome')`)
 		write('app/(site)/Hero.tsx', `'use client'\nimport { Button } from '@/components/Button'\nimport { send } from './actions'\nexport const Hero = () => translate('Automate your work')`)
 		write('app/(site)/actions.ts', `'use server'\nexport const send = () => translate('Something went wrong')`)
@@ -95,10 +95,10 @@ describe('sections', () => {
 		write('locales/fr.json', JSON.stringify({ 'Home // navigation': 'Accueil' }))
 	})
 
-	it('writes the main catalog with all a language\'s text, and each section only what its browser code uses', async () => {
+	it('writes the main catalog with all a language\'s text, and each namespace only what its browser code uses', async () => {
 		const { code, output } = await cli(['extract'])
 		expect(code).toBe(0)
-		expect(output).toContain('Sections')
+		expect(output).toContain('Namespaces')
 		expect(read('locales/fr.json')).toEqual({
 			'Automate your work': '',
 			'Something went wrong': '',
@@ -108,11 +108,11 @@ describe('sections', () => {
 		})
 		// Only the client modules' text: not the page's, the header's (server components) or the server action's.
 		expect(read('app/(site)/locales/fr.json')).toEqual({ 'Automate your work': '', '{count} items': { one: '', many: '', other: '' } })
-		// No languages: English only, so no files — and the admin section's text is its own, not the app's.
+		// No languages: English only, so no files — and the admin namespace's text is its own, not the app's.
 		expect(existsSync(at('app/(app)/locales'))).toBe(false)
-		expect(read('locales/sections.json')).toEqual({
+		expect(read('locales/namespaces.json')).toEqual({
 			sourceLocale: 'en',
-			sections: {
+			namespaces: {
 				site: { path: 'app/(site)', locales: ['fr'] },
 				app: { path: 'app/(app)', locales: [] },
 				admin: { path: 'app/(app)/admin', locales: [] }
@@ -121,7 +121,7 @@ describe('sections', () => {
 		expect(Object.keys(read('locales/fr.json'))).not.toContain('Dashboard')
 	})
 
-	it('fails the check until everything is translated and every section file is in sync', async () => {
+	it('fails the check until everything is translated and every namespace file is in sync', async () => {
 		await cli(['extract'])
 		const failing = await cli(['check'])
 		expect(failing.code).toBe(1)
@@ -148,35 +148,35 @@ describe('sections', () => {
 		expect(passing.output).toContain('up to date')
 	})
 
-	it('adds a language to some sections, and the main catalog follows', async () => {
-		const { code, output } = await cli(['add', 'de,ja', '--sections', 'app'])
+	it('adds a language to some namespaces, and the main catalog follows', async () => {
+		const { code, output } = await cli(['add', 'de,ja', '--namespaces', 'app'])
 		expect(code).toBe(0)
 		expect(output).toContain('Added app/(app)/locales/de.json')
 		expect(read('app/(app)/locales/ja.json')).toEqual({})
 		expect(read('locales/de.json')).toEqual({ Dashboard: '', 'Home // navigation': '' })
-		expect(read('locales/sections.json')).toMatchObject({ sections: { app: { locales: ['de', 'ja'] } } })
+		expect(read('locales/namespaces.json')).toMatchObject({ namespaces: { app: { locales: ['de', 'ja'] } } })
 
-		expect((await cli(['add', 'fr', '--sections', 'nope'])).output).toContain('No section is called "nope"')
+		expect((await cli(['add', 'fr', '--namespaces', 'nope'])).output).toContain('No namespace is called "nope"')
 		expect((await cli(['add', 'not a code'])).output).toContain('isn\'t a language code')
-		expect((await cli(['extract', '--locales', 'ko'])).output).toContain('No section is in ko yet')
+		expect((await cli(['extract', '--locales', 'ko'])).output).toContain('No namespace is in ko yet')
 	})
 
-	it('puts all of a section\'s text in its files with sectionMessages: all', async () => {
-		write('textlate.config.json', JSON.stringify({ dir: 'locales', sections: ['app/(site)', { path: 'app/(app)', name: 'dashboard' }] }))
+	it('puts all of a namespace\'s text in its files with namespaceMessages: all', async () => {
+		write('textlate.config.json', JSON.stringify({ dir: 'locales', namespaces: ['app/(site)', { path: 'app/(app)', name: 'dashboard' }] }))
 		await cli(['extract'])
 		expect(Object.keys(read('app/(site)/locales/fr.json'))).toEqual(['Automate your work', 'Something went wrong', 'Welcome', '{count} items', 'Home // navigation'])
-		// Without its own section, the admin pages are the app's.
-		await cli(['add', 'fr', '--sections', 'dashboard'])
+		// Without its own namespace, the admin pages are the app's.
+		await cli(['add', 'fr', '--namespaces', 'dashboard'])
 		expect(Object.keys(read('app/(app)/locales/fr.json'))).toEqual(['Admin only', 'Dashboard', 'Home // navigation'])
 	})
 
-	it('drops text no section uses any more, and warns about a catalog no section is in', async () => {
+	it('drops text no namespace uses any more, and warns about a catalog no namespace is in', async () => {
 		await cli(['extract'])
 		write('app/(site)/Hero.tsx', `'use client'\nexport const Hero = () => translate('A new headline')`)
 		write('locales/es.json', '{}')
 		const { output } = await cli(['extract'])
 		expect(Object.keys(read('locales/fr.json'))).not.toContain('Automate your work')
 		expect(read('app/(site)/locales/fr.json')).toEqual({ 'A new headline': '' })
-		expect(output).toContain('locales/es.json: no section is in this language any more')
+		expect(output).toContain('locales/es.json: no namespace is in this language any more')
 	})
 })
