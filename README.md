@@ -47,7 +47,7 @@ npx textlate translate    # finds the text above, translates only what's new, wr
 
 ## Comparison
 
-Each library translated the same three messages into Spanish with the same tooling, and each produced identical output. Reproduce with [`bench/compare`](bench/compare): `npm i && npm run size && npm run speed`.
+Each library translated the same three messages into Spanish with the same tooling, and each produced identical output. Reproduce with [`bench/compare`](bench/compare): `pnpm install && pnpm size && pnpm speed`.
 
 | | textlate 1 | react-i18next 17 + i18next 26 | react-intl 12 | next-intl 4 | Lingui 6 |
 |---|---|---|---|---|---|
@@ -596,10 +596,10 @@ Why it's fast:
 You are welcome to contribute! If you are adding a feature or fixing a bug, please contribute to the [GitHub repository](https://github.com/SheikhAminul/textlate/).
 
 ```sh
-npm install
-npm test           # unit, React, SSR, hydration and CLI tests
-npm run typecheck  # includes type-level tests
-npm run bench
+pnpm install
+pnpm test       # unit, React, SSR, hydration and CLI tests
+pnpm typecheck  # includes type-level tests
+pnpm bench
 ```
 
 ## License

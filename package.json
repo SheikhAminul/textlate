@@ -36,9 +36,9 @@
 		"typecheck": "tsc -p tsconfig.json",
 		"test": "vitest run",
 		"test:watch": "vitest",
-		"size": "npm run build && size-limit",
-		"prepublishOnly": "npm run typecheck && npm test && npm run build",
-		"bench": "npm run build && node bench/translate.js"
+		"size": "pnpm build && size-limit",
+		"prepublishOnly": "pnpm typecheck && pnpm test && pnpm build",
+		"bench": "pnpm build && node bench/translate.js"
 	},
 	"repository": {
 		"type": "git",
@@ -118,5 +118,6 @@
 			],
 			"limit": "1 kB"
 		}
-	]
+	],
+	"packageManager": "pnpm@10.33.0"
 }

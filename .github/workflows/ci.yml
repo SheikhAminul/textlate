@@ -15,21 +15,25 @@ jobs:
         node: [22, 24]
     steps:
       - uses: actions/checkout@v5
+      - uses: pnpm/action-setup@v4
       - uses: actions/setup-node@v5
         with:
           node-version: ${{ matrix.node }}
-      - run: npm install
-      - run: npm run typecheck
-      - run: npm test
-      - run: npm run size
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm typecheck
+      - run: pnpm test
+      - run: pnpm size
 
   nextjs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
+      - uses: pnpm/action-setup@v4
       - uses: actions/setup-node@v5
         with:
           node-version: 24
-      - run: npm install && npm run build && npm pack
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile && pnpm build && pnpm pack
       - working-directory: examples/nextjs
-        run: npm install --no-save ../../textlate-*.tgz && npx next build
+        run: pnpm add ../../textlate-*.tgz && pnpm exec next build
